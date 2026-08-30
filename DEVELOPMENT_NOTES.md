@@ -1005,6 +1005,46 @@ past expiry, and an empty list) to confirm none of it throws.
 
 ### Feature 2: Sparkle trail while dragging
 
+`window.py` gained a `ParticleSystem` instance (`self._particles`) and a
+throttled spawn helper, `_maybe_spawn_drag_particle`, called from
+`mouseMoveEvent` only while `self._dragging` is true. Since `mouseMoveEvent`
+can fire far more often than the 30fps repaint timer during a fast drag,
+spawning is throttled to roughly every other animation frame
+(`_DRAG_PARTICLE_INTERVAL_SECONDS = 2 * ANIMATION_INTERVAL_MS / 1000`) using
+a `time.monotonic()` timestamp check, the same throttle idiom
+`git_watcher.py`'s index-change debounce already uses. Particles are
+spawned at `event.position()` -- real widget-local pixel coordinates, no
+drift (`dx=dy=0.0`) -- and given a shorter lifespan (0.5s) than the
+particle system's 0.7s default, so the trail reads as a quick shimmer
+rather than lingering.
+
+**Drawing happens outside `paint_kitten`'s canvas transform, deliberately**:
+`paint_kitten` immediately translates/scales into its own fixed 128x128
+logical space, but drag-trail particles are spawned in real widget pixel
+coordinates (from `QMouseEvent.position()`), not that internal canvas space.
+So `paintEvent` calls `self._particles.update_and_prune(now)` +
+`draw_particles(painter, self._particles.positions(now))` on the raw
+painter *before* calling `paint_kitten` (which does its own `save()` /
+`restore()` around its transform), rather than threading particle positions
+through `paint_kitten`'s parameters the way badges/streak/nudge are. This
+also means the trail is purely cosmetic and window-owned, with no coupling
+to the kitten's own drawing code at all -- matching the spec's "no new
+state beyond what Feature 1 already provides."
+
+**Testing**: `pytest -q` -> still **99/99 passed** (no new pure-logic
+module, so no new test file -- this feature is Qt wiring only, verified
+the same way `window.py`/`sprite.py` changes always have been in this
+project: real Qt objects, off-screen). End-to-end: instantiated a real
+`KittenWindow`, sent a synthetic `QMouseEvent` press to start a drag, then
+5 synthetic move events spaced 0.1s apart (monkeypatching
+`time.monotonic` for determinism) -- confirmed exactly 5 particles were
+spawned (one per move, since each move crossed the throttle interval).
+Then sent 5 more move events spaced only 1ms apart -- confirmed only 1
+additional particle spawned (the rest correctly throttled). Finally called
+`window.grab()` (a real off-screen render of the live widget, not just
+`paint_kitten` directly) while particles were active mid-fade to confirm
+`paintEvent` doesn't throw with the new particle-drawing call in it.
+
 ### Feature 3: Rare random event (shooting star)
 
 ### Feature 4: Purr on hover

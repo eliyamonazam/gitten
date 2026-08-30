@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (
 from gitten.attention import AttentionState
 from gitten.mood import Mood
 from gitten.notifications import NotificationItem
-from gitten.sprite import paint_kitten
+from gitten.particles import ParticleSystem
+from gitten.sprite import draw_particles, paint_kitten
 from gitten.status_badge import Badge
 
 WINDOW_SIZE = 130
@@ -29,6 +30,12 @@ TASKBAR_MARGIN = 4
 _DRAG_THRESHOLD = 4
 NUDGE_DURATION_SECONDS = 4.0
 _NUDGE_FADE_SECONDS = 1.0
+
+# Spawn a drag-trail sparkle roughly every other animation frame, not on
+# every mouseMoveEvent (which can fire far more often than the 30fps repaint
+# timer during a fast drag).
+_DRAG_PARTICLE_INTERVAL_SECONDS = 2 * ANIMATION_INTERVAL_MS / 1000.0
+_DRAG_PARTICLE_LIFESPAN_SECONDS = 0.5
 
 # Shown in the inbox view for the two distinct "nothing to show" causes the
 # v1.2 spec calls out -- kept as plain strings (not exceptions) so
@@ -72,6 +79,8 @@ class KittenWindow(QWidget):
         self._dragging = False
         self._drag_moved = False
         self._drag_offset = QPoint()
+        self._particles = ParticleSystem()
+        self._last_particle_spawn_at = 0.0
 
         self._view_mode = "pet"  # or "inbox"
         self._attention_state = AttentionState.NORMAL
@@ -256,6 +265,14 @@ class KittenWindow(QWidget):
         now = time.monotonic()
         elapsed = now - self._start_time
         nudge_opacity = self._nudge_opacity(now)
+
+        # Particles are drawn in raw widget-pixel space, outside paint_kitten's
+        # own 128x128 canvas transform, since they're spawned from real cursor
+        # coordinates (drag trail) or window corners (shooting star) rather
+        # than the kitten's internal drawing space.
+        self._particles.update_and_prune(now)
+        draw_particles(painter, self._particles.positions(now))
+
         paint_kitten(
             painter,
             rect,
@@ -288,7 +305,18 @@ class KittenWindow(QWidget):
             if (new_pos - self.pos()).manhattanLength() > _DRAG_THRESHOLD:
                 self._drag_moved = True
             self.move(new_pos)
+            self._maybe_spawn_drag_particle(event)
             event.accept()
+
+    def _maybe_spawn_drag_particle(self, event: QMouseEvent) -> None:
+        now = time.monotonic()
+        if now - self._last_particle_spawn_at < _DRAG_PARTICLE_INTERVAL_SECONDS:
+            return
+        self._last_particle_spawn_at = now
+        local = event.position()
+        self._particles.spawn_particle(
+            local.x(), local.y(), now, lifespan=_DRAG_PARTICLE_LIFESPAN_SECONDS
+        )
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
