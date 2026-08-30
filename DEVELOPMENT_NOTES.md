@@ -686,7 +686,32 @@ that's confirmed working, the next step is building `telegram_watcher.py`
 (the Qt-integrated, thread-based version with the favorites/bad list
 matching and signal emission) and only then wiring it into `main.py`.
 
-## 11. Working agreement for this project
+## 11. Housekeeping this session: README accuracy & GitHub About description
+
+Two small, non-feature fixes bundled into this session per instructions:
+
+- **README's "Project structure" section was stale**: it still only listed
+  the v1 file set (`main.py`, `window.py`, `sprite.py`, `mood.py`,
+  `git_watcher.py`) even though v1.1 had already added `status_badge.py`,
+  `distraction.py`, `system_monitor.py`, and `foreground_window.py`, and
+  this session added `attention.py`, `notifications.py`, and
+  `telegram_config.py` plus the `scripts/` folder. Updated the tree to list
+  every module that actually exists on disk, with a one-line description
+  of each in the same style the section already used.
+- **The GitHub repository's "About" description was still the placeholder
+  "funny cat"**. The GitHub CLI (`gh`) is not installed in this
+  environment (`gh: command not found`), so it couldn't be updated
+  directly with `gh repo edit --description "..."` — the exact text to
+  paste into the repo's About panel on github.com was given to the user
+  instead, derived from the README's first paragraph.
+
+Also added `GITTEN_V1_4_SPEC.md` to version control -- the user dropped it
+in the project folder for a future session (streaks, focus mode, combo
+alert, random one-liners) but explicitly said not to start it yet, so it's
+committed as a plain doc with no accompanying code, same as how the other
+spec files were tracked before their features were built.
+
+## 12. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was

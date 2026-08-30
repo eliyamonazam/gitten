@@ -73,13 +73,22 @@ sprite-rendering code aren't unit tested -- verify those by running the app.
 ```
 gitten/
 ├── src/gitten/
-│   ├── main.py          # entry point: QApplication, tray, window, watcher wiring
-│   ├── window.py         # transparent always-on-top draggable QWidget
-│   ├── sprite.py         # QPainter drawing code for the kitten (idle/happy/waiting)
-│   ├── mood.py           # pure state machine logic, no Qt imports
-│   └── git_watcher.py    # watchdog-based watcher emitting mood-relevant events
+│   ├── main.py                # entry point: QApplication, tray, window, watcher wiring
+│   ├── window.py               # transparent always-on-top draggable QWidget
+│   ├── sprite.py                # QPainter drawing code for the kitten (all moods/poses)
+│   ├── mood.py                  # pure git-mood state machine, no Qt imports
+│   ├── git_watcher.py           # watchdog-based watcher emitting mood-relevant events
+│   ├── status_badge.py          # pure state machine for battery/CPU/disk badges
+│   ├── distraction.py           # pure distraction-nudge streak logic + list matching
+│   ├── system_monitor.py        # thin psutil wrapper (battery/CPU/mem/disk)
+│   ├── foreground_window.py     # thin win32gui wrapper (active window/process)
+│   ├── attention.py             # pure sulking/reconciliation state machine
+│   ├── notifications.py         # thin WinRT wrapper for the notification inbox
+│   └── telegram_config.py       # pure Telegram credential/session path logic
+├── scripts/
+│   └── telegram_connection_test.py  # standalone Telegram login/listen test (v1.3)
 ├── tests/
-│   └── test_mood.py
+│   └── test_*.py                # one file per pure module above
 ├── .github/workflows/ci.yml
 ├── pyproject.toml
 ├── build_exe.bat
