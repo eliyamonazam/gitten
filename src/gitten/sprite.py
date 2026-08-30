@@ -61,6 +61,7 @@ def paint_kitten(
     turn_stage: int | None = None,
     streak: int = 0,
     focused: bool = False,
+    hovering: bool = False,
 ) -> None:
     painter.save()
     painter.setRenderHint(QPainter.Antialiasing, True)
@@ -78,17 +79,28 @@ def paint_kitten(
 
     center = QPointF(CENTER.x() + jitter_x, CENTER.y() + bob)
 
-    # "Focused" (a matching test/build process is currently running) is a
-    # standalone reaction layered independently of git mood, but sulking
-    # still takes precedence -- a cat mid-sulk doesn't perk up for a test run.
-    show_focused = focused and turn_stage is None
+    # "Purring" (mouse hovering) and "focused" (a test/build process running)
+    # are both standalone reactions layered independently of git mood.
+    # Sulking still wins over both -- a cat mid-sulk doesn't warm up just
+    # because the cursor is over it or a test happens to be running -- and
+    # between the two, a live hover is a more immediate, direct signal than
+    # a passive background test run, so purring additionally wins over
+    # focused whenever both happen to be true at once. (`view_mode == "pet"`
+    # isn't threaded through as its own parameter here -- `window.py`'s
+    # `paintEvent` already returns early without calling `paint_kitten` at
+    # all while the inbox view is showing, so it's already guaranteed true
+    # by the time this function runs.)
+    show_purr = hovering and turn_stage is None
+    show_focused = focused and turn_stage is None and not show_purr
 
     _draw_shadow(painter, center)
     _draw_tail(painter, center, tail_phase)
-    _draw_ears(painter, center, breathe, perked=show_focused)
+    _draw_ears(painter, center, breathe, perked=show_focused, wiggle=show_purr, t=t)
     _draw_body(painter, center, breathe)
     if turn_stage is not None:
         _draw_face_turned(painter, center, turn_stage, t)
+    elif show_purr:
+        _draw_purr_face(painter, center, t)
     elif show_focused:
         _draw_focused_face(painter, center, t)
     else:
@@ -143,19 +155,30 @@ def _draw_tail(painter: QPainter, center: QPointF, phase: float) -> None:
     painter.restore()
 
 
-def _draw_ears(painter: QPainter, center: QPointF, breathe: float, perked: bool = False) -> None:
+def _draw_ears(
+    painter: QPainter,
+    center: QPointF,
+    breathe: float,
+    perked: bool = False,
+    wiggle: bool = False,
+    t: float = 0.0,
+) -> None:
     painter.save()
     painter.setPen(_outline_pen())
     # "Perked" (focus reaction): ears stand taller and lean in toward the
     # center, an alert/attentive posture, instead of the normal relaxed angle.
     height_scale = 1.3 if perked else 1.0
     lean = 0.5 if perked else 1.0
+    # "Wiggle" (purr reaction): a slow, gentle side-to-side sway on the ear
+    # tips -- the same sine-wave idiom already used for breathing/tail sway,
+    # applied here instead of a static lean.
+    sway = 2.5 * math.sin(t * 3.0) if wiggle else 0.0
     for side in (-1, 1):
         ex = center.x() + side * BODY_RX * 0.62
         ey = center.y() - BODY_RY * 0.82
         outer = [
             QPointF(ex - 13 * side, ey + 6),
-            QPointF(ex + 4 * side * lean, ey - 24 * breathe * height_scale),
+            QPointF(ex + 4 * side * lean + sway, ey - 24 * breathe * height_scale),
             QPointF(ex + 15 * side, ey + 10),
         ]
         painter.setBrush(BODY_COLOR)
@@ -163,7 +186,7 @@ def _draw_ears(painter: QPainter, center: QPointF, breathe: float, perked: bool 
 
         inner = [
             QPointF(ex - 6 * side, ey + 3),
-            QPointF(ex + 3 * side * lean, ey - 12 * breathe * height_scale),
+            QPointF(ex + 3 * side * lean + sway, ey - 12 * breathe * height_scale),
             QPointF(ex + 9 * side, ey + 5),
         ]
         painter.setPen(Qt.NoPen)
@@ -277,6 +300,30 @@ def _draw_waiting_face(painter: QPainter, center: QPointF, t: float) -> None:
     path = QPainterPath(QPointF(center.x() - 6, mouth_y))
     path.quadTo(QPointF(center.x() - 3, mouth_y + 3), QPointF(center.x(), mouth_y))
     path.quadTo(QPointF(center.x() + 3, mouth_y - 3), QPointF(center.x() + 6, mouth_y))
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_purr_face(painter: QPainter, center: QPointF, t: float) -> None:
+    """The "purr" reaction: a content, slightly-squinted look while the
+    mouse hovers over the cat. Distinct from the IDLE face's fully-closed
+    sleepy curves and the HAPPY face's wide upward smile -- squinted but
+    still slightly open, with a gentle upward smile and no zzz/heart/bubble
+    overlay at all."""
+    painter.save()
+    pen = _outline_pen(2.2)
+    painter.setPen(pen)
+    eye_y = center.y() - 2
+    squint = 0.6 + 0.1 * math.sin(t * 2.5)
+    for side in (-1, 1):
+        ex = center.x() + side * 11
+        path = QPainterPath(QPointF(ex - 5, eye_y + 1))
+        path.quadTo(QPointF(ex, eye_y + 3 * squint), QPointF(ex + 5, eye_y + 1))
+        painter.drawPath(path)
+
+    mouth_y = center.y() + 9
+    path = QPainterPath(QPointF(center.x() - 5, mouth_y - 1))
+    path.quadTo(QPointF(center.x(), mouth_y + 4), QPointF(center.x() + 5, mouth_y - 1))
     painter.drawPath(path)
     painter.restore()
 

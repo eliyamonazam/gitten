@@ -1089,6 +1089,63 @@ as before.
 
 ### Feature 4: Purr on hover
 
+### Feature 4: Purr on hover
+
+**`window.py`** overrides Qt's `enterEvent`/`leaveEvent` to track a plain
+`self._hovering: bool`, threaded through to `paint_kitten` as a new
+`hovering` parameter -- no debouncing needed since Qt only fires these once
+per actual enter/leave of the widget's region, not per pixel of mouse
+movement.
+
+**`sprite.py`**: precedence is computed once, mirroring exactly how
+`show_focused` was computed in v1.4 Feature 2 (`show_focused = focused and
+turn_stage is None`), extended with one more layer:
+
+```python
+show_purr = hovering and turn_stage is None
+show_focused = focused and turn_stage is None and not show_purr
+```
+
+Sulking (`turn_stage is not None`) still wins over both, per the spec.
+Between hover and focus, purring additionally wins whenever both are true
+at once -- a judgment call this session made explicitly (the spec only
+specifies precedence against sulking/inbox, not against `focused`): a live
+hover is a more immediate, direct interaction signal than a passive
+background test run, so it makes sense for the cat to visibly notice being
+petted even mid-test-run, reverting the instant the cursor leaves. Verified
+concretely, not just reasoned about: rendered `hovering=True` combined with
+`turn_stage=1` and diffed the image against a plain `turn_stage=1` render
+with no hover -- **zero pixels differed**, confirming sulking truly
+suppresses the purr face with no leakage, versus a non-sulking hover-vs-no-
+hover comparison which differed by 608 pixels (the purr face genuinely
+changes the render).
+
+`view_mode == "pet"` -- the third condition the spec's `show_purr` formula
+names -- isn't threaded through `paint_kitten` as its own parameter,
+deliberately: `window.py`'s `paintEvent` already returns early without
+calling `paint_kitten` at all whenever `view_mode == "inbox"` (this was
+already true before this feature, for the exact same reason `turn_stage`
+rendering never had to separately check the inbox view either), so it's
+already guaranteed true by the time `paint_kitten` runs at all. Documented
+inline in `sprite.py` so a future session doesn't wonder where the third
+condition went.
+
+`_draw_ears` gained a `wiggle: bool` + `t: float` pair alongside the
+existing `perked` flag: a small sine-wave sway on the ear tips (`2.5 *
+sin(t * 3.0)`), the same breathing/tail-sway idiom reused a third time. A
+new `_draw_purr_face` draws squinted-but-not-fully-closed eyes (distinct
+from IDLE's fully-closed sleep curves) with a gentle upward smile and no
+zzz/heart/bubble overlay, matching the "distinct from mood-driven
+happy/idle/waiting faces" requirement.
+
+**Testing**: `pytest -q` -> still **104/104 passed** (no new pure-logic
+module -- this is Qt wiring + drawing only). Rendered every combination
+off-screen (`hovering` with each of the three moods, `hovering` +
+`focused`, `hovering` + `turn_stage`, and no hover) to confirm none throw;
+sent a real `QEnterEvent`/`QEvent.Leave` through a live `KittenWindow` and
+confirmed `_hovering` flips both ways correctly; and did the pixel-diff
+precedence proof described above.
+
 ### Feature 5: High-five on double-click
 
 ### Feature 6: Nameable cat

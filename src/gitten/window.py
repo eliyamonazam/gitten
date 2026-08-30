@@ -83,6 +83,7 @@ class KittenWindow(QWidget):
         self._drag_offset = QPoint()
         self._particles = ParticleSystem()
         self._last_particle_spawn_at = 0.0
+        self._hovering = False
 
         self._view_mode = "pet"  # or "inbox"
         self._attention_state = AttentionState.NORMAL
@@ -300,7 +301,14 @@ class KittenWindow(QWidget):
             turn_stage=self._turn_stage if self._attention_state == AttentionState.SULKING else None,
             streak=self._streak,
             focused=self._focused,
+            hovering=self._hovering,
         )
+
+    def enterEvent(self, event) -> None:
+        self._hovering = True
+
+    def leaveEvent(self, event) -> None:
+        self._hovering = False
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.interacted.emit()
