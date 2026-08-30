@@ -777,6 +777,77 @@ of the new drawing paths throw.
 
 ### Feature 2: Focus reaction while tests/builds run
 
+**New pure module `src/gitten/focus.py`** -- same split as `distraction.py`:
+`matches_focus_process(cmdline, substrings)` is a case-insensitive substring
+match against one process's full command line, and
+`load_focus_substrings(path)` reads a user-editable JSON file
+(`~/.gitten/focus_config.json`, `{"substrings": [...]}`) falling back to the
+spec's defaults (`pytest`/`npm test`/`npm run build`/`cargo test`/`go test`)
+if missing or invalid -- exactly the same JSON-file-in-`~/.gitten/` pattern
+`distraction.py` established. Neither function touches `psutil`.
+
+**The actual `psutil.process_iter()` sweep lives in `system_monitor.py`**,
+not in `focus.py` -- that file is already this project's "thin I/O boundary"
+for psutil (per its own module docstring), the same split already used for
+`foreground_window.py` (win32 I/O boundary) vs. `distraction.py` (pure
+matching logic). The new `is_focus_process_running(substrings)` iterates
+`psutil.process_iter(["cmdline"])`, joins each process's `cmdline` list into
+one string, and checks it with `matches_focus_process`; a process that
+disappears or denies access mid-scan (`NoSuchProcess`/`AccessDenied`) is
+skipped rather than aborting the whole sweep, since that's routine on a
+system with many short-lived processes.
+
+**Being upfront about the limitation the spec calls out**: this only
+answers "is a matching process currently running", never whether it passed
+or failed. Gitten observes processes rather than launching them, so exit
+codes/log output aren't available to it -- guessing pass/fail from log
+files would be fragile (different tools format output differently, and a
+still-running process has no exit code yet) and was deliberately not
+attempted, per the spec's explicit instruction. The reaction is therefore
+framed purely as "watching" -- see rendering below -- with no pass/fail
+opinion at all.
+
+**`sprite.py`** gained an optional `focused: bool = False` parameter on
+`paint_kitten`. `_draw_ears` gained a `perked: bool = False` parameter
+(height scaled up 1.3x and leaning in toward center instead of splaying out,
+an alert posture) and a new `_draw_focused_face` draws wide white eyes with
+pupils that stay fixed dead ahead (a slow size-pulse standing in for
+"concentrating", no eyebrows) and a small flat neutral mouth -- deliberately
+different from the WAITING mood's nervous side-to-side glancing pupils and
+worried eyebrows, since "watching a test run" isn't the same feeling as
+"anxious about uncommitted changes". Precedence: sulking (`turn_stage`)
+still wins over focus -- a mid-sulk cat doesn't perk up for a test run --
+computed once as `show_focused = focused and turn_stage is None` and used
+for both the ear posture and the face/mood-overlay branch, so the two never
+render inconsistently with each other.
+
+**`window.py`** gained `set_focused(bool)` (same no-op-if-unchanged pattern
+as `set_badge`/`set_streak`) and threads it through to `paint_kitten`.
+
+**`main.py`**: `self.focus_substrings` is loaded once at startup via
+`load_focus_substrings(DEFAULT_FOCUS_CONFIG_PATH)`. A new 5-second
+`QTimer` (`_on_focus_tick`, the same cadence as the attention tick) calls
+`is_focus_process_running(self.focus_substrings)` and pushes the result
+straight to `window.set_focused(...)` -- no tracker/state machine needed
+since, unlike mood or distraction, this reaction has no streak/threshold
+logic at all, just "is one running right now".
+
+**Testing**: `pytest -q` -> **82/82 passed** (71 pre-existing + 11 new
+`test_focus.py` tests: each of the five default substrings matching,
+case-insensitivity, an unrelated process not matching, custom substrings
+overriding the defaults, and the three `load_focus_substrings` file-loading
+cases mirroring `test_distraction.py`'s). Rendered `focused=True` combined
+with each mood (`IDLE`/`HAPPY`/`WAITING`), `focused=True` together with
+`turn_stage=1` (confirming sulking still wins -- no exception and the
+turned-face path is what actually draws), and `focused=False`, all through
+an off-screen `QPixmap`. Also did a real end-to-end check of
+`is_focus_process_running`: called it with nothing matching running
+(`False`), then launched a real `python -m pytest --collect-only -q`
+subprocess and called it again while that process was alive (`True`), then
+again after it exited (`False`) -- confirming the psutil sweep actually
+detects a real matching process by its command line, not just by mocked
+input.
+
 ### Feature 3: Verify (and lightly enhance) the low-battery + uncommitted-changes combo
 
 ### Feature 4: Random cute one-liners

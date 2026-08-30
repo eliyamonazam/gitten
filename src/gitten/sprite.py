@@ -60,6 +60,7 @@ def paint_kitten(
     nudge_opacity: float = 0.0,
     turn_stage: int | None = None,
     streak: int = 0,
+    focused: bool = False,
 ) -> None:
     painter.save()
     painter.setRenderHint(QPainter.Antialiasing, True)
@@ -77,15 +78,22 @@ def paint_kitten(
 
     center = QPointF(CENTER.x() + jitter_x, CENTER.y() + bob)
 
+    # "Focused" (a matching test/build process is currently running) is a
+    # standalone reaction layered independently of git mood, but sulking
+    # still takes precedence -- a cat mid-sulk doesn't perk up for a test run.
+    show_focused = focused and turn_stage is None
+
     _draw_shadow(painter, center)
     _draw_tail(painter, center, tail_phase)
-    _draw_ears(painter, center, breathe)
+    _draw_ears(painter, center, breathe, perked=show_focused)
     _draw_body(painter, center, breathe)
-    if turn_stage is None:
+    if turn_stage is not None:
+        _draw_face_turned(painter, center, turn_stage, t)
+    elif show_focused:
+        _draw_focused_face(painter, center, t)
+    else:
         _draw_face(painter, center, mood, t)
         _draw_mood_overlay(painter, center, mood, t)
-    else:
-        _draw_face_turned(painter, center, turn_stage, t)
 
     if badge is not None and badge != Badge.NONE:
         _draw_status_badge(painter, center, badge, t)
@@ -134,15 +142,19 @@ def _draw_tail(painter: QPainter, center: QPointF, phase: float) -> None:
     painter.restore()
 
 
-def _draw_ears(painter: QPainter, center: QPointF, breathe: float) -> None:
+def _draw_ears(painter: QPainter, center: QPointF, breathe: float, perked: bool = False) -> None:
     painter.save()
     painter.setPen(_outline_pen())
+    # "Perked" (focus reaction): ears stand taller and lean in toward the
+    # center, an alert/attentive posture, instead of the normal relaxed angle.
+    height_scale = 1.3 if perked else 1.0
+    lean = 0.5 if perked else 1.0
     for side in (-1, 1):
         ex = center.x() + side * BODY_RX * 0.62
         ey = center.y() - BODY_RY * 0.82
         outer = [
             QPointF(ex - 13 * side, ey + 6),
-            QPointF(ex + 4 * side, ey - 24 * breathe),
+            QPointF(ex + 4 * side * lean, ey - 24 * breathe * height_scale),
             QPointF(ex + 15 * side, ey + 10),
         ]
         painter.setBrush(BODY_COLOR)
@@ -150,7 +162,7 @@ def _draw_ears(painter: QPainter, center: QPointF, breathe: float) -> None:
 
         inner = [
             QPointF(ex - 6 * side, ey + 3),
-            QPointF(ex + 3 * side, ey - 12 * breathe),
+            QPointF(ex + 3 * side * lean, ey - 12 * breathe * height_scale),
             QPointF(ex + 9 * side, ey + 5),
         ]
         painter.setPen(Qt.NoPen)
@@ -265,6 +277,36 @@ def _draw_waiting_face(painter: QPainter, center: QPointF, t: float) -> None:
     path.quadTo(QPointF(center.x() - 3, mouth_y + 3), QPointF(center.x(), mouth_y))
     path.quadTo(QPointF(center.x() + 3, mouth_y - 3), QPointF(center.x() + 6, mouth_y))
     painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_focused_face(painter: QPainter, center: QPointF, t: float) -> None:
+    """The "focus" reaction: an intent, unblinking stare while a matching
+    test/build process is running. Unlike the WAITING face's nervous
+    side-to-side glancing, the pupils stay fixed dead ahead -- this is
+    watchful, not worried -- with a slow pupil-size pulse standing in for
+    "concentrating" and no eyebrows/mouth-worry lines."""
+    painter.save()
+    eye_y = center.y() - 3
+    pupil_pulse = 3.6 + 0.5 * math.sin(t * 2.2)
+
+    for side in (-1, 1):
+        ex = center.x() + side * 11
+        eye_rect = QRectF(0, 0, 11, 11)
+        eye_rect.moveCenter(QPointF(ex, eye_y))
+        painter.setPen(_outline_pen(1.8))
+        painter.setBrush(WHITE)
+        painter.drawEllipse(eye_rect)
+
+        pupil_rect = QRectF(0, 0, pupil_pulse, pupil_pulse)
+        pupil_rect.moveCenter(QPointF(ex, eye_y))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(OUTLINE_COLOR)
+        painter.drawEllipse(pupil_rect)
+
+    mouth_y = center.y() + 10
+    painter.setPen(_outline_pen(2.0))
+    painter.drawLine(QPointF(center.x() - 4, mouth_y), QPointF(center.x() + 4, mouth_y))
     painter.restore()
 
 

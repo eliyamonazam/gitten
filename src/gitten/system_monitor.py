@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import psutil
 
+from gitten.focus import matches_focus_process
+
 
 @dataclass
 class SystemSample:
@@ -34,3 +36,25 @@ def sample_system() -> SystemSample:
         mem_percent=psutil.virtual_memory().percent,
         disk_percent=psutil.disk_usage(_system_drive()).percent,
     )
+
+
+def is_focus_process_running(substrings: list[str] | None = None) -> bool:
+    """Whether any currently running process's command line matches one of
+    the watched dev-tool substrings (default: pytest/npm test/etc, or a
+    user-supplied list -- see ``focus.load_focus_substrings``).
+
+    Gitten only *observes* these processes rather than launching them
+    itself, so this can only ever answer "is a matching run currently in
+    progress", never whether it passed or failed -- that would require
+    Gitten to wrap and launch the command itself, which is out of scope
+    here. Each process is checked defensively: one that disappears or
+    denies access mid-scan is skipped rather than aborting the whole sweep.
+    """
+    for proc in psutil.process_iter(["cmdline"]):
+        try:
+            cmdline = proc.info["cmdline"] or []
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if matches_focus_process(" ".join(cmdline), substrings):
+            return True
+    return False

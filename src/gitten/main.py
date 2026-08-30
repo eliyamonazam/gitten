@@ -25,6 +25,7 @@ from gitten.distraction import (
     is_distracting_window,
     load_distraction_lists,
 )
+from gitten.focus import DEFAULT_FOCUS_CONFIG_PATH, load_focus_substrings
 from gitten.foreground_window import get_foreground_window
 from gitten.git_watcher import GitWatcher, count_commits_today, get_commit_streak
 from gitten.mood import Mood, MoodMachine
@@ -32,7 +33,7 @@ from gitten.notifications import fetch_notifications, request_access
 from gitten.notifications import is_supported as notifications_supported
 from gitten.sprite import paint_kitten
 from gitten.status_badge import StatusBadgeTracker
-from gitten.system_monitor import sample_system
+from gitten.system_monitor import is_focus_process_running, sample_system
 from gitten.window import INBOX_ACCESS_NOT_GRANTED, INBOX_UNAVAILABLE, KittenWindow
 
 ORG_NAME = "Gitten"
@@ -41,6 +42,7 @@ TICK_INTERVAL_MS = 5000
 SYSTEM_SAMPLE_INTERVAL_MS = 7000
 DISTRACTION_POLL_INTERVAL_MS = 3000
 ATTENTION_TICK_INTERVAL_MS = 5000
+FOCUS_POLL_INTERVAL_MS = 5000
 NUDGE_MESSAGE = "یه وقفه کوتاه چطوره؟"
 
 
@@ -89,6 +91,7 @@ class GittenApp:
         self.distracting_titles, self.distracting_processes = load_distraction_lists(
             DEFAULT_CONFIG_PATH
         )
+        self.focus_substrings = load_focus_substrings(DEFAULT_FOCUS_CONFIG_PATH)
         self.watcher = GitWatcher()
         self.window = KittenWindow()
         self.window.set_context_menu_callback(self._show_context_menu)
@@ -118,6 +121,10 @@ class GittenApp:
         self._attention_timer = QTimer()
         self._attention_timer.timeout.connect(self._on_attention_tick)
         self._attention_timer.start(ATTENTION_TICK_INTERVAL_MS)
+
+        self._focus_timer = QTimer()
+        self._focus_timer.timeout.connect(self._on_focus_tick)
+        self._focus_timer.start(FOCUS_POLL_INTERVAL_MS)
 
         self.window.show()
 
@@ -292,6 +299,9 @@ class GittenApp:
         should_nudge = self.distraction_tracker.update(is_distracting, now=time.monotonic())
         if should_nudge:
             self.window.show_nudge(NUDGE_MESSAGE)
+
+    def _on_focus_tick(self) -> None:
+        self.window.set_focused(is_focus_process_running(self.focus_substrings))
 
     def run(self) -> int:
         return self.app.exec()

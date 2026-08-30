@@ -65,6 +65,7 @@ class KittenWindow(QWidget):
         self._mood = Mood.IDLE
         self._badge = Badge.NONE
         self._streak = 0
+        self._focused = False
         self._nudge_text: str | None = None
         self._nudge_started_at: float | None = None
         self._start_time = time.monotonic()
@@ -148,6 +149,11 @@ class KittenWindow(QWidget):
     def set_streak(self, streak: int) -> None:
         if streak != self._streak:
             self._streak = streak
+            self.update()
+
+    def set_focused(self, focused: bool) -> None:
+        if focused != self._focused:
+            self._focused = focused
             self.update()
 
     def show_nudge(self, text: str) -> None:
@@ -257,6 +263,7 @@ class KittenWindow(QWidget):
             nudge_opacity=nudge_opacity,
             turn_stage=self._turn_stage if self._attention_state == AttentionState.SULKING else None,
             streak=self._streak,
+            focused=self._focused,
         )
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
