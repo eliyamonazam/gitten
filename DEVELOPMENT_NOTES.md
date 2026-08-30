@@ -964,7 +964,58 @@ to confirm none of them throw.
 
 With this, all four v1.4 features are implemented, tested, and documented.
 
-## 13. Working agreement for this project
+## 13. v1.5 -- interactive & time-based personality features
+
+Input is `GITTEN_V1_5_SPEC.md`, 7 features, same "one at a time, in order,
+test + document before moving on, separate commits" process as v1.4.
+Features 1-3 deliberately build on a shared particle system and were kept
+in that exact order.
+
+### Feature 1: Sparkle particle system (foundation for 2 and 3)
+
+**New pure module `src/gitten/particles.py`** -- same pure/Qt split as
+`mood.py` vs. `sprite.py`: a `Particle` dataclass (`x`, `y`, `spawned_at`,
+`lifespan`, `dx`/`dy` drift) and a `ParticleSystem` with `spawn_particle(x,
+y, now, lifespan, dx, dy)`, `update_and_prune(now)` (drops anything past
+its lifespan), and `positions(now) -> list[(x, y, opacity)]` (position
+advanced by drift, opacity fading linearly to 0). Deliberately generic --
+nothing here mentions dragging or shooting stars -- so Feature 3 can reuse
+it unchanged for a very different visual just by spawning with a longer
+lifespan and a drift vector instead of Feature 2's short-lived, stationary
+sparkles.
+
+**One deliberate deviation from the spec's suggested `spawn_particle` /
+`update_and_prune` / `draw_particles` shape**: `draw_particles` itself
+lives in `sprite.py`, not on `ParticleSystem`, taking the plain `(x, y,
+opacity)` tuples `positions()` already computes. This keeps `particles.py`
+completely Qt-free and unit-testable with fake timestamps, the same
+discipline every other pure module in this project follows (`focus.py`'s
+matching logic vs. `system_monitor.py`'s psutil sweep is the closest
+precedent) -- worth calling out explicitly here since the spec's own
+wording suggested drawing could live on the same object.
+
+**Testing**: `pytest -q` -> **99/99 passed** (92 pre-existing + 7 new
+`test_particles.py` tests: an empty system, a freshly spawned particle at
+full opacity, linear opacity fade to 0.5 at the halfway point,
+`update_and_prune` dropping an expired particle and keeping a still-alive
+one, drift correctly advancing position over elapsed time, and multiple
+particles tracked independently). Rendered `draw_particles` off-screen with
+a batch of particles at several points across their lifespan (including one
+past expiry, and an empty list) to confirm none of it throws.
+
+### Feature 2: Sparkle trail while dragging
+
+### Feature 3: Rare random event (shooting star)
+
+### Feature 4: Purr on hover
+
+### Feature 5: High-five on double-click
+
+### Feature 6: Nameable cat
+
+### Feature 7: Seasonal accessories & day/night palette
+
+## 14. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was

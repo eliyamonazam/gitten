@@ -626,6 +626,28 @@ def _draw_crown_icon(painter: QPainter, pos: QPointF) -> None:
     painter.restore()
 
 
+# -- particles --------------------------------------------------------------
+# Generic small fading dots (drag-trail sparkles, the shooting star). Takes
+# plain (x, y, opacity) tuples from `particles.ParticleSystem.positions` --
+# knows nothing about spawn times or lifespans, purely draws what it's given.
+
+_PARTICLE_COLOR = QColor("#FFD54F")
+
+
+def draw_particles(painter: QPainter, positions: list[tuple[float, float, float]]) -> None:
+    if not positions:
+        return
+    painter.save()
+    painter.setPen(Qt.NoPen)
+    for x, y, opacity in positions:
+        color = QColor(_PARTICLE_COLOR)
+        color.setAlphaF(max(0.0, min(1.0, opacity)))
+        painter.setBrush(color)
+        radius = 1.5 + 1.5 * opacity
+        painter.drawEllipse(QPointF(x, y), radius, radius)
+    painter.restore()
+
+
 # -- distraction nudge ----------------------------------------------------
 
 
