@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QMouseEvent, QPainter, QPaintEvent
@@ -21,6 +22,7 @@ from gitten.attention import AttentionState
 from gitten.mood import Mood
 from gitten.notifications import NotificationItem
 from gitten.particles import ParticleSystem
+from gitten.seasons import is_night_time
 from gitten.sprite import draw_particles, paint_kitten
 from gitten.status_badge import Badge
 
@@ -78,6 +80,7 @@ class KittenWindow(QWidget):
         self._badge = Badge.NONE
         self._streak = 0
         self._focused = False
+        self._accessory: str | None = None
         self._nudge_text: str | None = None
         self._nudge_started_at: float | None = None
         self._start_time = time.monotonic()
@@ -182,6 +185,11 @@ class KittenWindow(QWidget):
     def set_focused(self, focused: bool) -> None:
         if focused != self._focused:
             self._focused = focused
+            self.update()
+
+    def set_accessory(self, accessory: str | None) -> None:
+        if accessory != self._accessory:
+            self._accessory = accessory
             self.update()
 
     def show_nudge(self, text: str) -> None:
@@ -319,6 +327,8 @@ class KittenWindow(QWidget):
             focused=self._focused,
             hovering=self._hovering,
             high_five=self._high_fiving,
+            accessory=self._accessory,
+            night=is_night_time(datetime.now().hour),
         )
 
     def enterEvent(self, event) -> None:

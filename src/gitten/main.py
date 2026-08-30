@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from datetime import date
 
 from PySide6.QtCore import QRectF, QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QIcon, QPainter, QPixmap
@@ -38,6 +39,7 @@ from gitten.oneliners import (
     should_show_oneliner,
     should_show_rare_event,
 )
+from gitten.seasons import seasonal_accessory
 from gitten.sprite import paint_kitten
 from gitten.status_badge import StatusBadgeTracker
 from gitten.system_monitor import is_focus_process_running, sample_system
@@ -93,6 +95,8 @@ class GittenApp:
 
         self.settings = QSettings(ORG_NAME, APP_NAME)
         self.cat_name = self.settings.value("cat/name", DEFAULT_CAT_NAME)
+        stored_birthday = self.settings.value("cat/birthday")
+        self.birthday = date.fromisoformat(stored_birthday) if stored_birthday else None
         self.mood_machine = MoodMachine()
         self.badge_tracker = StatusBadgeTracker()
         self.distraction_tracker = DistractionTracker()
@@ -169,6 +173,10 @@ class GittenApp:
         rename_action.triggered.connect(self._prompt_rename)
         menu.addAction(rename_action)
 
+        birthday_action = QAction("Set my birthday...")
+        birthday_action.triggered.connect(self._prompt_set_birthday)
+        menu.addAction(birthday_action)
+
         menu.addSeparator()
         quit_action = QAction("Quit Gitten")
         quit_action.triggered.connect(self.app.quit)
@@ -190,6 +198,26 @@ class GittenApp:
             self.cat_name = name.strip()
             self.settings.setValue("cat/name", self.cat_name)
             self._update_tray_tooltip()
+
+    def _prompt_set_birthday(self) -> None:
+        # QInputDialog has no date-entry convenience method in this Qt
+        # binding (only text/int/double/item/multiline-text) -- confirmed by
+        # checking dir(QInputDialog) rather than assuming, since the spec's
+        # "a QInputDialog date entry is fine" turned out not to exist as
+        # written. A validated YYYY-MM-DD text prompt is the equivalent.
+        current = self.birthday.isoformat() if self.birthday else ""
+        text, ok = QInputDialog.getText(
+            None, "Gitten", "Cat's birthday (YYYY-MM-DD):", text=current
+        )
+        if not ok or not text.strip():
+            return
+        try:
+            parsed = date.fromisoformat(text.strip())
+        except ValueError:
+            QMessageBox.warning(None, "Gitten", f"'{text}' isn't a valid date (use YYYY-MM-DD).")
+            return
+        self.birthday = parsed
+        self.settings.setValue("cat/birthday", self.birthday.isoformat())
 
     def _on_tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.DoubleClick:
@@ -287,6 +315,10 @@ class GittenApp:
         mood = self.mood_machine.tick(now=time.monotonic())
         self._apply_mood(mood)
         self._apply_streak()
+        self._apply_accessory()
+
+    def _apply_accessory(self) -> None:
+        self.window.set_accessory(seasonal_accessory(date.today(), self.birthday))
 
     def _apply_mood(self, mood: Mood) -> None:
         self.window.set_mood(mood)

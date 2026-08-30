@@ -63,6 +63,8 @@ def paint_kitten(
     focused: bool = False,
     hovering: bool = False,
     high_five: bool = False,
+    accessory: str | None = None,
+    night: bool = False,
 ) -> None:
     painter.save()
     painter.setRenderHint(QPainter.Antialiasing, True)
@@ -97,7 +99,7 @@ def paint_kitten(
     _draw_shadow(painter, center)
     _draw_tail(painter, center, tail_phase)
     _draw_ears(painter, center, breathe, perked=show_focused, wiggle=show_purr, t=t)
-    _draw_body(painter, center, breathe)
+    _draw_body(painter, center, breathe, night=night)
     if turn_stage is not None:
         _draw_face_turned(painter, center, turn_stage, t)
     elif show_purr:
@@ -108,6 +110,9 @@ def paint_kitten(
         _draw_face(painter, center, mood, t)
         urgent = badge in (Badge.LOW_BATTERY, Badge.CRITICAL_BATTERY)
         _draw_mood_overlay(painter, center, mood, t, urgent=urgent)
+
+    if accessory is not None:
+        _draw_accessory(painter, center, accessory, t)
 
     if badge is not None and badge != Badge.NONE:
         _draw_status_badge(painter, center, badge, t)
@@ -212,17 +217,38 @@ def _draw_polygon(painter: QPainter, pts) -> None:
     painter.drawPath(path)
 
 
-def _draw_body(painter: QPainter, center: QPointF, breathe: float) -> None:
+_MOONLIT_BASE = QColor("#3B4A6B")
+_MOONLIT_HIGHLIGHT = QColor("#5C6F99")
+_NIGHT_BLEND_FACTOR = 0.45
+
+
+def _blend_color(a: QColor, b: QColor, factor: float) -> QColor:
+    """Linear-interpolate two colors; factor 0.0 = a, 1.0 = b."""
+    return QColor(
+        round(a.red() + (b.red() - a.red()) * factor),
+        round(a.green() + (b.green() - a.green()) * factor),
+        round(a.blue() + (b.blue() - a.blue()) * factor),
+    )
+
+
+def _draw_body(painter: QPainter, center: QPointF, breathe: float, night: bool = False) -> None:
     painter.save()
     rect = QRectF(0, 0, BODY_RX * 2, BODY_RY * 2 * breathe)
     rect.moveCenter(center)
+
+    if night:
+        base_color = _blend_color(BODY_COLOR, _MOONLIT_BASE, _NIGHT_BLEND_FACTOR)
+        highlight_color = _blend_color(BODY_HIGHLIGHT, _MOONLIT_HIGHLIGHT, _NIGHT_BLEND_FACTOR)
+    else:
+        base_color = BODY_COLOR
+        highlight_color = BODY_HIGHLIGHT
 
     gradient = QRadialGradient(
         QPointF(center.x() - BODY_RX * 0.35, center.y() - BODY_RY * 0.5),
         BODY_RX * 1.6,
     )
-    gradient.setColorAt(0.0, BODY_HIGHLIGHT)
-    gradient.setColorAt(1.0, BODY_COLOR)
+    gradient.setColorAt(0.0, highlight_color)
+    gradient.setColorAt(1.0, base_color)
 
     painter.setPen(_outline_pen())
     painter.setBrush(gradient)
@@ -749,6 +775,88 @@ def _draw_speech_bubble(painter: QPainter, center: QPointF, text: str, opacity: 
 
     painter.setPen(OUTLINE_COLOR)
     painter.drawText(bubble, Qt.AlignCenter, text)
+    painter.restore()
+
+
+# -- seasonal accessories -----------------------------------------------------
+# A small hat/icon worn on top of the head -- visually distinct from the
+# badge (top-left) and streak (top-right) corner icons, since a hat reads as
+# "worn" rather than "floating beside."
+
+_ACCESSORY_POS = QPointF(0.0, -BODY_RY * 1.55)
+
+
+def _draw_accessory(painter: QPainter, center: QPointF, accessory: str, t: float) -> None:
+    pos = QPointF(center.x() + _ACCESSORY_POS.x(), center.y() + _ACCESSORY_POS.y())
+    if accessory == "halloween":
+        _draw_witch_hat(painter, pos)
+    elif accessory == "yalda":
+        _draw_pomegranate_hat(painter, pos)
+    elif accessory == "birthday":
+        _draw_party_hat(painter, pos)
+
+
+def _draw_witch_hat(painter: QPainter, pos: QPointF) -> None:
+    painter.save()
+    painter.setPen(_outline_pen(1.4))
+    painter.setBrush(QColor("#2B2B33"))
+
+    brim = QRectF(0, 0, 28.0, 6.0)
+    brim.moveCenter(QPointF(pos.x(), pos.y() + 6.0))
+    painter.drawEllipse(brim)
+
+    cone = QPainterPath(QPointF(pos.x() - 9.0, pos.y() + 4.0))
+    cone.lineTo(QPointF(pos.x() + 2.0, pos.y() - 20.0))
+    cone.lineTo(QPointF(pos.x() + 9.0, pos.y() + 4.0))
+    cone.closeSubpath()
+    painter.drawPath(cone)
+
+    band = QRectF(0, 0, 20.0, 4.0)
+    band.moveCenter(QPointF(pos.x() - 0.5, pos.y() + 0.5))
+    painter.setBrush(QColor("#7B4FA0"))
+    painter.setPen(Qt.NoPen)
+    painter.drawRect(band)
+    painter.restore()
+
+
+def _draw_pomegranate_hat(painter: QPainter, pos: QPointF) -> None:
+    painter.save()
+    painter.setPen(_outline_pen(1.2))
+    painter.setBrush(QColor("#B32B3A"))
+    body = QRectF(0, 0, 16.0, 15.0)
+    body.moveCenter(QPointF(pos.x(), pos.y() + 3.0))
+    painter.drawEllipse(body)
+
+    # a small calyx/crown on top -- the pomegranate's signature silhouette
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor("#5C8A4A"))
+    crown = [
+        QPointF(pos.x() - 4.0, pos.y() - 3.5),
+        QPointF(pos.x(), pos.y() - 10.0),
+        QPointF(pos.x() + 4.0, pos.y() - 3.5),
+    ]
+    _draw_polygon(painter, crown)
+    painter.restore()
+
+
+def _draw_party_hat(painter: QPainter, pos: QPointF) -> None:
+    painter.save()
+    painter.setPen(_outline_pen(1.4))
+    cone = QPainterPath(QPointF(pos.x() - 9.0, pos.y() + 5.0))
+    cone.lineTo(QPointF(pos.x(), pos.y() - 18.0))
+    cone.lineTo(QPointF(pos.x() + 9.0, pos.y() + 5.0))
+    cone.closeSubpath()
+
+    gradient = QLinearGradient(QPointF(pos.x(), pos.y() - 18.0), QPointF(pos.x(), pos.y() + 5.0))
+    gradient.setColorAt(0.0, QColor("#42A5F5"))
+    gradient.setColorAt(0.5, QColor("#FFEE58"))
+    gradient.setColorAt(1.0, QColor("#EF5350"))
+    painter.setBrush(gradient)
+    painter.drawPath(cone)
+
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(WHITE)
+    painter.drawEllipse(QPointF(pos.x(), pos.y() - 18.0), 2.5, 2.5)
     painter.restore()
 
 

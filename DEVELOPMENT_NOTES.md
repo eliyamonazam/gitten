@@ -1290,6 +1290,91 @@ doesn't leave a stray "Whiskers" behind for the real app.
 
 ### Feature 7: Seasonal accessories & day/night palette
 
+### Feature 7: Seasonal accessories & day/night palette
+
+**New pure module `src/gitten/seasons.py`**, same discipline as
+`streak.py`: `seasonal_accessory(today: date, birthday: date | None =
+None) -> str | None` (the spec's signature only names `today`; `birthday`
+was added as an optional keyword parameter so the function stays simple to
+call for the two fixed-calendar cases while still supporting the third)
+returns `"halloween"` (Oct 31), `"yalda"` (~Dec 21), `"birthday"` (matching
+month/day, birth year ignored), or `None` -- fixed calendar occasions are
+checked before the birthday, a deliberate priority choice for the (very
+unlikely) case of a birthday landing on Halloween or Yalda, covered by its
+own test. `is_night_time(hour: int) -> bool` is a plain range check,
+23:00-7:00.
+
+**Rendering**: `paint_kitten` gained `accessory: str | None = None` and
+`night: bool = False`. The accessory renders via a new `_draw_accessory`
+dispatcher at a dedicated top-center spot (`_ACCESSORY_POS`, directly above
+the head) -- distinct from the badge (top-left) and streak (top-right)
+corner icons, since (per the spec) a hat reads as "worn" rather than
+"floating beside": a black witch hat with a purple band for Halloween, a
+small red pomegranate with a green calyx for Yalda (the fruit's iconic
+silhouette, matching the occasion's traditional symbol), and a gradient-
+striped party hat with a white pom-pom for a birthday. Night is a pure
+rendering-time adjustment, exactly as the spec asks -- **no new state
+stored anywhere**: `_draw_body` gained a `night` flag and, when true, blends
+`BODY_COLOR`/`BODY_HIGHLIGHT` 45% toward a cooler "moonlit" blue-grey
+(`_blend_color`, a small linear RGB interpolation helper) before building
+its existing gradient. Only the body's base color shifts, matching the
+spec's literal wording -- ears/tail were deliberately left their normal
+coral, a minimal-scope choice rather than chasing a fully "moonlit" cat
+nobody asked for.
+
+**Where each new input comes from, and why they're sourced differently**:
+`accessory` is *pushed* into `window.py` via a new `set_accessory()` setter
+(same no-op-if-unchanged pattern as `set_badge`/`set_streak`), recomputed
+every 5-second `_on_tick` in `main.py` (`_apply_accessory`) since it
+depends on `date.today()` and the stored `birthday`, neither of which
+`window.py` has access to. `night`, by contrast, is computed *live inside
+`paintEvent` itself* (`is_night_time(datetime.now().hour)`) with no setter
+and no stored `self._night` field at all -- window.py already imports
+`seasons.is_night_time` directly, so there was no reason to add a second
+state-pushing pathway for something that's cheap to compute fresh on every
+paint and, per the spec, explicitly shouldn't be new state.
+
+**Feature 6 and 7's tray entries were built together**, per the spec's own
+suggestion ("both are simple one-time `QSettings`-backed prompts -- natural
+to build together"): "Set my birthday..." sits right below "Rename..." in
+the tray menu, and birthday is loaded/stored the same way
+(`self.settings.value("cat/birthday")`, an ISO date string).
+
+**A real API mismatch caught during testing, not assumed away**: the spec
+suggested "`A QInputDialog date entry is fine`", but this Qt binding's
+`QInputDialog` has no `getDate` method at all -- confirmed by checking
+`dir(QInputDialog)` rather than trusting the assumption, which returned
+only `getText`/`getInt`/`getDouble`/`getItem`/`getMultiLineText`. First
+attempt at the end-to-end check hit `AttributeError: <class
+'PySide6.QtWidgets.QInputDialog'> does not have the attribute 'getDate'`
+immediately. Fixed by using `QInputDialog.getText` with a `YYYY-MM-DD`
+prompt instead, parsed via `date.fromisoformat` inside a `try/except
+ValueError` that shows a `QMessageBox.warning` (the same invalid-input
+pattern `_prompt_choose_repo` already uses for a non-repo folder) rather
+than crashing or silently accepting garbage.
+
+**Testing**: `pytest -q` -> **114/114 passed** (104 pre-existing + 10 new
+`test_seasons.py` tests: Halloween, Yalda, an ordinary day with/without a
+birthday set, a birthday matching regardless of birth year, both fixed
+holidays correctly outranking a same-day birthday, and the night-time
+range's interior hours plus its exact boundaries at 22/23/6/7). Rendered
+every accessory value, `night=True`/`False`, and combinations with
+streak/badge/hovering off-screen to confirm none throw; unit-verified
+`_blend_color` at factors 0.0/0.5/1.0 directly; and rendered day-vs-night
+twice and diffed the images (3,088 differing pixels) to confirm `night`
+genuinely changes the rendered output, not just accepts the flag silently.
+End-to-end against a real `GittenApp`: set a birthday via a patched
+`QInputDialog.getText` and confirmed it persisted to `QSettings`,
+confirmed `_apply_accessory()` correctly reflects whatever
+`seasonal_accessory(date.today(), birthday)` returns for the real current
+date, confirmed a birthday-matching date correctly threads all the way to
+`window._accessory == "birthday"`, confirmed a cancelled dialog leaves the
+birthday unchanged, and confirmed an invalid date string warns via
+`QMessageBox` without crashing and without corrupting the previously-set
+birthday.
+
+With this, all 7 v1.5 features are implemented, tested, and documented.
+
 ## 14. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
