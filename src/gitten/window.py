@@ -37,6 +37,8 @@ _NUDGE_FADE_SECONDS = 1.0
 _DRAG_PARTICLE_INTERVAL_SECONDS = 2 * ANIMATION_INTERVAL_MS / 1000.0
 _DRAG_PARTICLE_LIFESPAN_SECONDS = 0.5
 
+_SHOOTING_STAR_LIFESPAN_SECONDS = 1.0
+
 # Shown in the inbox view for the two distinct "nothing to show" causes the
 # v1.2 spec calls out -- kept as plain strings (not exceptions) so
 # `set_inbox_items` can't be misused to smuggle a real error through.
@@ -172,6 +174,19 @@ class KittenWindow(QWidget):
     @property
     def is_nudging(self) -> bool:
         return self._nudge_text is not None
+
+    def trigger_shooting_star(self) -> None:
+        """A single particle (Feature 1's system, reused unchanged) launched
+        from the top-left corner and animated diagonally to the bottom-right
+        over ~1 second, fading as it goes -- the rare event `main.py` plays
+        instead of a one-liner roughly 5% of the time."""
+        now = time.monotonic()
+        end_x, end_y = float(self.width()), float(self.height())
+        dx = end_x / _SHOOTING_STAR_LIFESPAN_SECONDS
+        dy = end_y / _SHOOTING_STAR_LIFESPAN_SECONDS
+        self._particles.spawn_particle(
+            0.0, 0.0, now, lifespan=_SHOOTING_STAR_LIFESPAN_SECONDS, dx=dx, dy=dy
+        )
 
     def set_context_menu_callback(self, callback) -> None:
         self._context_menu_requested_callback = callback

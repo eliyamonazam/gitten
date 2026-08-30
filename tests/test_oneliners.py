@@ -5,6 +5,7 @@ from gitten.oneliners import (
     pick_oneliner,
     random_interval_seconds,
     should_show_oneliner,
+    should_show_rare_event,
 )
 
 
@@ -65,3 +66,40 @@ def test_skips_when_in_inbox_view():
 
 def test_skips_when_everything_is_going_on_at_once():
     assert should_show_oneliner("inbox", is_sulking=True, is_nudging=True) is False
+
+
+# -- should_show_rare_event -----------------------------------------------------
+
+
+def test_rare_event_fraction_is_close_to_probability_over_many_draws():
+    rng = random.Random(7)
+    trials = 20000
+    hits = sum(1 for _ in range(trials) if should_show_rare_event(rng))
+    fraction = hits / trials
+    # default probability is 0.05 -- allow a generous tolerance band since
+    # this is a statistical check, not an exact one.
+    assert 0.03 <= fraction <= 0.07
+
+
+def test_rare_event_respects_custom_probability():
+    rng = random.Random(11)
+    trials = 5000
+    hits = sum(1 for _ in range(trials) if should_show_rare_event(rng, probability=0.5))
+    fraction = hits / trials
+    assert 0.45 <= fraction <= 0.55
+
+
+def test_rare_event_probability_zero_never_fires():
+    rng = random.Random(3)
+    assert all(not should_show_rare_event(rng, probability=0.0) for _ in range(1000))
+
+
+def test_rare_event_probability_one_always_fires():
+    rng = random.Random(5)
+    assert all(should_show_rare_event(rng, probability=1.0) for _ in range(1000))
+
+
+def test_rare_event_is_deterministic_given_a_seeded_rng():
+    a = should_show_rare_event(random.Random(99))
+    b = should_show_rare_event(random.Random(99))
+    assert a == b

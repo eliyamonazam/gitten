@@ -31,7 +31,12 @@ from gitten.git_watcher import GitWatcher, count_commits_today, get_commit_strea
 from gitten.mood import Mood, MoodMachine
 from gitten.notifications import fetch_notifications, request_access
 from gitten.notifications import is_supported as notifications_supported
-from gitten.oneliners import pick_oneliner, random_interval_seconds, should_show_oneliner
+from gitten.oneliners import (
+    pick_oneliner,
+    random_interval_seconds,
+    should_show_oneliner,
+    should_show_rare_event,
+)
 from gitten.sprite import paint_kitten
 from gitten.status_badge import StatusBadgeTracker
 from gitten.system_monitor import is_focus_process_running, sample_system
@@ -322,7 +327,10 @@ class GittenApp:
         silently skipped and the next one is rescheduled regardless."""
         is_sulking = self.attention_tracker.state == AttentionState.SULKING
         if should_show_oneliner(self.window.view_mode, is_sulking, self.window.is_nudging):
-            self.window.show_nudge(pick_oneliner())
+            if should_show_rare_event():
+                self.window.trigger_shooting_star()
+            else:
+                self.window.show_nudge(pick_oneliner())
         self._schedule_next_oneliner()
 
     def run(self) -> int:

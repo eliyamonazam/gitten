@@ -55,3 +55,17 @@ def should_show_oneliner(view_mode: str, is_sulking: bool, is_nudging: bool) -> 
     nudge, not in the notification inbox view. If not, the caller should
     skip this occurrence and reschedule rather than interrupting."""
     return view_mode == "pet" and not is_sulking and not is_nudging
+
+
+DEFAULT_RARE_EVENT_PROBABILITY = 0.05
+
+
+def should_show_rare_event(
+    rng: random.Random | None = None, probability: float = DEFAULT_RARE_EVENT_PROBABILITY
+) -> bool:
+    """A small chance (default 5%) that, whenever a one-liner would
+    otherwise be shown, a rare "shooting star" event plays instead. Pass a
+    seeded ``rng`` in tests for determinism; production callers can omit
+    it."""
+    r = rng if rng is not None else random
+    return r.random() < probability

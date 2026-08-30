@@ -1047,6 +1047,46 @@ additional particle spawned (the rest correctly throttled). Finally called
 
 ### Feature 3: Rare random event (shooting star)
 
+### Feature 3: Rare random event (shooting star)
+
+**`oneliners.py`** gained `should_show_rare_event(rng=None, probability=0.05)`,
+following the exact same injectable-RNG shape as `random_interval_seconds`/
+`pick_oneliner`: `rng.random() < probability`.
+
+**`window.py`** gained `trigger_shooting_star()`, which reuses Feature 1's
+`ParticleSystem` completely unchanged -- it just spawns *one* particle at
+the top-left corner `(0, 0)` with a drift vector computed so it reaches the
+bottom-right corner `(width, height)` exactly at the end of its 1-second
+lifespan (`dx = width / 1.0`, `dy = height / 1.0`), fading the whole way per
+`ParticleSystem`'s existing linear opacity falloff. No new drawing code at
+all -- `draw_particles` (already wired into `paintEvent` for Feature 2)
+renders it exactly like a drag-trail sparkle, just one that travels much
+further and lives much longer.
+
+**`main.py`**'s `_on_oneliner_timer` now checks `should_show_rare_event()`
+*inside* the existing `should_show_oneliner(...)` branch -- so the rare
+event only gets a chance to fire on an occurrence that would have shown a
+one-liner anyway (same gating: idle pet view, not sulking, not already
+nudging), and when it doesn't fire, the normal `pick_oneliner()` nudge
+plays exactly as before. This matches the spec precisely: "each time it
+fires and `should_show_oneliner(...)` returns `True`, add a small chance...
+that instead of a normal text bubble, a shooting star plays instead."
+
+**Testing**: `pytest -q` -> **104/104 passed** (99 pre-existing + 5 new
+`should_show_rare_event` tests in `test_oneliners.py`: the observed fraction
+over 20,000 seeded draws landing within a generous tolerance band of the
+default 5% probability, a custom 50% probability similarly landing near
+50% over 5,000 draws, probability 0.0 never firing across 1,000 draws,
+probability 1.0 always firing across 1,000 draws, and determinism given a
+seeded RNG). End-to-end: instantiated a real `GittenApp`, forced the idle
+gating state, and patched `gitten.main.should_show_rare_event` to always
+return `True` -- confirmed the real `_on_oneliner_timer` code path calls
+`trigger_shooting_star()` (not `show_nudge`), that it added exactly one new
+particle starting at `(0, 0)` with a positive `dx`/`dy` and `lifespan ==
+1.0`, and that no nudge bubble text was set. Then patched it to always
+return `False` and confirmed the normal one-liner nudge path still fires
+as before.
+
 ### Feature 4: Purr on hover
 
 ### Feature 5: High-five on double-click
