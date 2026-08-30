@@ -850,6 +850,57 @@ input.
 
 ### Feature 3: Verify (and lightly enhance) the low-battery + uncommitted-changes combo
 
+**Verified first, before writing any code**, per the spec's explicit
+instruction not to just assume it. `mood.py` (git-driven) and
+`status_badge.py` (system-driven) were built in v1 and v1.1 respectively as
+deliberately independent state machines, and `sprite.py`'s
+`_draw_status_badge` call already sits outside the `if turn_stage is
+None: ...` mood-face branch, so nothing about the badge's rendering was ever
+conditioned on mood. Confirmed this concretely rather than just reading the
+code: drove a real `MoodMachine` into `WAITING` (via `update_dirty` +
+`tick` past the threshold) and a real `StatusBadgeTracker` into
+`CRITICAL_BATTERY` (10 sustained low-battery samples), rendered both
+together through `paint_kitten` on an off-screen `QPixmap`, and diffed that
+image against a `WAITING`-with-no-badge render and an `IDLE`-with-the-same-
+badge render -- in both comparisons the exact same 150 pixels differed
+(the badge icon's silhouette), proving the badge renders identically
+regardless of mood and the two layers really are fully independent, with
+**no new code**.
+
+**The one small deliberate touch added**: `paint_kitten` now computes
+`urgent = badge in (Badge.LOW_BATTERY, Badge.CRITICAL_BATTERY)` and passes
+it through `_draw_mood_overlay` to `_draw_exclaim_bubble`, which swaps the
+WAITING bubble's text from `"!"` to `"‼"` (U+203C, DOUBLE EXCLAMATION MARK)
+when `urgent` is true -- a pure rendering-time string choice, read fresh on
+every paint from whatever `badge`/`mood` happen to be current, with no new
+state stored anywhere.
+
+**A genuine limitation of this sandboxed test environment surfaced while
+verifying the glyph swap, worth recording for future sessions**: comparing
+rendered pixels of `"!"` vs `"‼"` off-screen came back bit-for-bit
+identical (0 differing pixels) at first, which looked like a bug. Chased it
+down with `QFontDatabase.families()`, which returned an **empty list** --
+`QT_QPA_PLATFORM=offscreen` in this environment has zero fonts installed at
+all, so every character (any character) falls back to the same
+missing-glyph placeholder box, regardless of which one was actually
+requested. This is an environment artifact, not an app bug -- confirmed by
+monkey-patching `QPainter.drawText` to spy on its string argument instead of
+comparing rendered pixels: `_draw_exclaim_bubble(..., urgent=False)`
+genuinely calls `drawText` with `"!"` and `urgent=True` genuinely calls it
+with `"‼"`, two distinct strings. **This is the one thing to eyeball on a
+real Windows desktop before considering this feature fully verified** (real
+Segoe UI, unlike this sandbox, does have the U+203C glyph) -- the same
+category of "couldn't verify live rendering in this environment" limitation
+already noted for v1.1's badges/nudge and v1.2's inbox panel/sulking poses.
+
+No new tests file: the spec explicitly asks for no new state machine, and
+`sprite.py` has never had a `test_sprite.py` (it's always been verified via
+off-screen `QPixmap` renders per the project's established pattern, not
+pytest, since it's pure drawing code with no branching logic worth unit
+testing in isolation). `pytest -q` was re-run anyway after this feature's
+changes to confirm nothing regressed: **82/82 passed** (unchanged from
+Feature 2, since this feature added no new pure-logic module).
+
 ### Feature 4: Random cute one-liners
 
 ## 13. Working agreement for this project

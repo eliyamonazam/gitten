@@ -93,7 +93,8 @@ def paint_kitten(
         _draw_focused_face(painter, center, t)
     else:
         _draw_face(painter, center, mood, t)
-        _draw_mood_overlay(painter, center, mood, t)
+        urgent = badge in (Badge.LOW_BATTERY, Badge.CRITICAL_BATTERY)
+        _draw_mood_overlay(painter, center, mood, t, urgent=urgent)
 
     if badge is not None and badge != Badge.NONE:
         _draw_status_badge(painter, center, badge, t)
@@ -353,13 +354,15 @@ def _draw_face_turned(painter: QPainter, center: QPointF, stage: int, t: float) 
     painter.restore()
 
 
-def _draw_mood_overlay(painter: QPainter, center: QPointF, mood: Mood, t: float) -> None:
+def _draw_mood_overlay(
+    painter: QPainter, center: QPointF, mood: Mood, t: float, urgent: bool = False
+) -> None:
     if mood == Mood.IDLE:
         _draw_zzz(painter, center, t)
     elif mood == Mood.HAPPY:
         _draw_heart(painter, center, t)
     else:
-        _draw_exclaim_bubble(painter, center, t)
+        _draw_exclaim_bubble(painter, center, t, urgent=urgent)
 
 
 def _draw_zzz(painter: QPainter, center: QPointF, t: float) -> None:
@@ -423,7 +426,7 @@ def _draw_heart(painter: QPainter, center: QPointF, t: float) -> None:
     painter.restore()
 
 
-def _draw_exclaim_bubble(painter: QPainter, center: QPointF, t: float) -> None:
+def _draw_exclaim_bubble(painter: QPainter, center: QPointF, t: float, urgent: bool = False) -> None:
     painter.save()
     bounce = 2.0 * abs(math.sin(t * 3.0))
     bx = center.x() + BODY_RX * 0.55
@@ -438,7 +441,10 @@ def _draw_exclaim_bubble(painter: QPainter, center: QPointF, t: float) -> None:
     painter.setFont(font)
     painter.setPen(_outline_pen(1.4))
     metrics = QFontMetricsF(font)
-    text = "!"
+    # A low/critical battery badge active at the same moment reads as more
+    # urgent than "uncommitted changes" alone -- a pure rendering-time check,
+    # no new state machine.
+    text = "‼" if urgent else "!"
     tw = metrics.horizontalAdvance(text)
     th = metrics.ascent()
     painter.drawText(QPointF(bx - tw / 2, by + th / 2 - 1), text)
