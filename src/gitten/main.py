@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import time
 
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
 
 import psutil
 
+from gitten.attention import AttentionState, AttentionTracker, turn_stage
 from gitten.distraction import (
     DEFAULT_CONFIG_PATH,
     DistractionTracker,
@@ -26,17 +28,43 @@ from gitten.distraction import (
 from gitten.foreground_window import get_foreground_window
 from gitten.git_watcher import GitWatcher, count_commits_today
 from gitten.mood import Mood, MoodMachine
+from gitten.notifications import fetch_notifications, request_access
+from gitten.notifications import is_supported as notifications_supported
 from gitten.sprite import paint_kitten
 from gitten.status_badge import StatusBadgeTracker
 from gitten.system_monitor import sample_system
-from gitten.window import KittenWindow
+from gitten.window import INBOX_ACCESS_NOT_GRANTED, INBOX_UNAVAILABLE, KittenWindow
 
 ORG_NAME = "Gitten"
 APP_NAME = "Gitten"
 TICK_INTERVAL_MS = 5000
 SYSTEM_SAMPLE_INTERVAL_MS = 7000
 DISTRACTION_POLL_INTERVAL_MS = 3000
+ATTENTION_TICK_INTERVAL_MS = 5000
 NUDGE_MESSAGE = "یه وقفه کوتاه چطوره؟"
+
+
+def _fetch_inbox_snapshot():
+    """Blocking (one-shot asyncio.run) fetch of the current notification
+    snapshot, run synchronously from the click handler that opens the inbox.
+
+    A brief block on the UI thread is an acceptable v1.2 simplification --
+    unlike the Telegram feature, nothing here needs a long-lived background
+    event loop, just one WinRT round-trip triggered by a single click.
+    """
+    if not notifications_supported():
+        return INBOX_UNAVAILABLE
+
+    async def _run():
+        if not await request_access():
+            return None
+        return await fetch_notifications()
+
+    try:
+        items = asyncio.run(_run())
+    except Exception:
+        return INBOX_UNAVAILABLE
+    return INBOX_ACCESS_NOT_GRANTED if items is None else items
 
 
 def _make_icon(mood: Mood, size: int = 64) -> QIcon:
@@ -57,12 +85,15 @@ class GittenApp:
         self.mood_machine = MoodMachine()
         self.badge_tracker = StatusBadgeTracker()
         self.distraction_tracker = DistractionTracker()
+        self.attention_tracker = AttentionTracker()
         self.distracting_titles, self.distracting_processes = load_distraction_lists(
             DEFAULT_CONFIG_PATH
         )
         self.watcher = GitWatcher()
         self.window = KittenWindow()
         self.window.set_context_menu_callback(self._show_context_menu)
+        self.window.interacted.connect(self._on_interacted)
+        self.window.plain_clicked.connect(self._on_plain_click)
         self._session_start = time.monotonic()
 
         self._build_tray()
@@ -83,6 +114,10 @@ class GittenApp:
         self._distraction_timer = QTimer()
         self._distraction_timer.timeout.connect(self._on_distraction_tick)
         self._distraction_timer.start(DISTRACTION_POLL_INTERVAL_MS)
+
+        self._attention_timer = QTimer()
+        self._attention_timer.timeout.connect(self._on_attention_tick)
+        self._attention_timer.start(ATTENTION_TICK_INTERVAL_MS)
 
         self.window.show()
 
@@ -213,6 +248,32 @@ class GittenApp:
             disk_percent=sample.disk_percent,
         )
         self.window.set_badge(badge)
+
+    def _on_interacted(self) -> None:
+        self.attention_tracker.register_interaction(now=time.monotonic())
+
+    def _on_plain_click(self) -> None:
+        """A plain click while the "pet" view is showing. Per the v1.2
+        interaction rule: while sulking, it's a pet (reconciliation
+        progress); otherwise it opens the notification inbox."""
+        now = time.monotonic()
+        if self.attention_tracker.state == AttentionState.SULKING:
+            self.attention_tracker.register_pet(now)
+            self._apply_attention()
+        else:
+            self.window.open_inbox()
+            self.window.set_inbox_items(_fetch_inbox_snapshot())
+
+    def _apply_attention(self) -> None:
+        if self.attention_tracker.state == AttentionState.SULKING:
+            stage = turn_stage(self.attention_tracker.pets_received)
+            self.window.set_attention(AttentionState.SULKING, stage)
+        else:
+            self.window.set_attention(AttentionState.NORMAL, None)
+
+    def _on_attention_tick(self) -> None:
+        self.attention_tracker.tick(now=time.monotonic())
+        self._apply_attention()
 
     def _on_distraction_tick(self) -> None:
         fg = get_foreground_window()

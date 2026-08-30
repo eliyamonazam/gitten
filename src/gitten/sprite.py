@@ -58,6 +58,7 @@ def paint_kitten(
     badge: Badge | None = None,
     nudge_text: str | None = None,
     nudge_opacity: float = 0.0,
+    turn_stage: int | None = None,
 ) -> None:
     painter.save()
     painter.setRenderHint(QPainter.Antialiasing, True)
@@ -79,8 +80,11 @@ def paint_kitten(
     _draw_tail(painter, center, tail_phase)
     _draw_ears(painter, center, breathe)
     _draw_body(painter, center, breathe)
-    _draw_face(painter, center, mood, t)
-    _draw_mood_overlay(painter, center, mood, t)
+    if turn_stage is None:
+        _draw_face(painter, center, mood, t)
+        _draw_mood_overlay(painter, center, mood, t)
+    else:
+        _draw_face_turned(painter, center, turn_stage, t)
 
     if badge is not None and badge != Badge.NONE:
         _draw_status_badge(painter, center, badge, t)
@@ -257,6 +261,49 @@ def _draw_waiting_face(painter: QPainter, center: QPointF, t: float) -> None:
     path.quadTo(QPointF(center.x() - 3, mouth_y + 3), QPointF(center.x(), mouth_y))
     path.quadTo(QPointF(center.x() + 3, mouth_y - 3), QPointF(center.x() + 6, mouth_y))
     painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_face_turned(painter: QPainter, center: QPointF, stage: int, t: float) -> None:
+    """Sulking back-view poses, stages 0-3 ("fully reconciled" -- stage 4 --
+    is just the normal front view above, handled by the caller). Each stage
+    reveals a bit more of the face, as if glancing back over a shoulder,
+    without changing body proportions so it still reads as the same cat.
+    """
+    painter.save()
+
+    # A faint center seam hints at the back of the head; it fades out as the
+    # cat turns further toward the viewer.
+    seam_pen = _outline_pen(1.6)
+    seam_color = QColor(OUTLINE_COLOR)
+    seam_color.setAlpha(int(150 * (1.0 - stage / 3.0)))
+    seam_pen.setColor(seam_color)
+    painter.setPen(seam_pen)
+    painter.drawLine(QPointF(center.x(), center.y() - 15), QPointF(center.x(), center.y() + 9))
+
+    if stage <= 0:
+        painter.restore()
+        return
+
+    # From stage 1, a sliver of face peeks in from one side; by stage 3 both
+    # eyes and a small mouth are visible -- close to, but not quite, a full
+    # front-facing pose.
+    reveal = stage / 3.0
+    visible_sides = (1,) if stage == 1 else (-1, 1)
+    eye_y = center.y() - 2
+    painter.setPen(_outline_pen(2.0))
+    for side in visible_sides:
+        ex = center.x() + side * (6 + 5 * reveal)
+        path = QPainterPath(QPointF(ex - (4 * reveal + 1), eye_y))
+        path.quadTo(QPointF(ex, eye_y + 2.5 * reveal), QPointF(ex + 4 * reveal + 1, eye_y))
+        painter.drawPath(path)
+
+    if stage >= 3:
+        mouth_y = center.y() + 10
+        path = QPainterPath(QPointF(center.x() - 3, mouth_y))
+        path.quadTo(QPointF(center.x(), mouth_y + 2), QPointF(center.x() + 3, mouth_y))
+        painter.drawPath(path)
+
     painter.restore()
 
 

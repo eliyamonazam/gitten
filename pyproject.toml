@@ -11,6 +11,11 @@ dependencies = [
     "psutil>=5.9",
     "pywin32>=306; sys_platform == 'win32'",
     "telethon>=1.36",
+    "winrt-Windows.UI.Notifications.Management>=3.0.0; sys_platform == 'win32'",
+    "winrt-Windows.UI.Notifications>=3.0.0; sys_platform == 'win32'",
+    "winrt-Windows.Foundation>=3.0.0; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections>=3.0.0; sys_platform == 'win32'",
+    "winrt-Windows.ApplicationModel>=3.0.0; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

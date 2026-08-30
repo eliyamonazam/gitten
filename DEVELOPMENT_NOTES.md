@@ -401,7 +401,189 @@ Added `psutil>=5.9` and `pywin32>=306; sys_platform == 'win32'` to
   verified, the same way `assets/preview.png` was produced for v1's three
   moods.
 
-## 9. v1.3 (in progress) — Telegram connection, step 1: standalone script
+## 9. v1.2 — notification inbox & cat personality
+
+Input is `GITTEN_V1_2_SPEC.md`. This had never actually been built despite
+being numbered before v1.3 — the previous session went straight from v1.1
+to the v1.3 Telegram script, and this session went back to fill in the gap
+before continuing v1.3, per this session's explicit instructions. Both of
+the spec's features are now implemented and wired into `main.py`.
+
+### Feature A: notification inbox
+
+**New module `src/gitten/notifications.py`** — a thin WinRT wrapper (same
+"thin I/O boundary" spirit as `system_monitor.py` / `foreground_window.py`)
+plus one pure, testable formatting function:
+
+- `is_supported()` / `request_access()` / `fetch_notifications()` wrap
+  `Windows.UI.Notifications.Management.UserNotificationListener` behind a
+  top-level `try/except ImportError` guard (`_WINRT_AVAILABLE`) and a
+  broad `except Exception` around every actual WinRT call, so a missing
+  package, a denied permission, or any WinRT-side failure all degrade to a
+  `None`/`False` return rather than raising, exactly as the spec asks
+  ("don't force it... degrade gracefully").
+- `format_notification(app_name, text_lines, created_at, now)` is the pure
+  piece the spec calls out separately: given plain strings and datetimes
+  (no WinRT objects), it decides the one-line text (joining a toast's text
+  elements with " -- ") and a small relative time stamp ("just now",
+  "14m ago", "3h ago", or a plain date past a day). Fully unit-tested
+  without touching Windows at all.
+
+**API shape was reverse-engineered against the real, installed package**
+rather than guessed, since the winrt-python projection's exact method names
+aren't obvious from the spec text alone: `UserNotificationListener.current`
+is a property (not `get_current()`); `get_access_status()` /
+`request_access_async()` return a `UserNotificationListenerAccessStatus`
+(`ALLOWED`/`DENIED`/`UNSPECIFIED`); `get_notifications_async(NotificationKinds.TOAST)`
+returns an indexable collection ordered **oldest first** (reversed in
+`fetch_notifications()` so the inbox shows newest first); each item exposes
+`.app_info.display_info.display_name`, `.creation_time` (a tz-aware
+`datetime`), and `.notification.visual.bindings[0].get_text_elements()`
+for the title/body text. This was all confirmed against this machine's own
+real Windows notifications (see Testing below), not just read from docs.
+
+**A packaging quirk worth recording**: `pip install winrt-Windows.UI.Notifications.Management`
+alone was not enough to actually run the code — importing it and calling
+into it raised `ModuleNotFoundError` for `winrt.windows.foundation`, then
+`winrt.windows.foundation.collections`, then
+`winrt.windows.applicationmodel` one at a time, each only surfacing once
+the previous one was fixed and the code actually touched that namespace.
+The winrt-python packages split every WinRT namespace into its own PyPI
+package and don't declare all of these as transitive dependencies of each
+other. All five packages actually needed ended up added to
+`pyproject.toml` explicitly (`winrt-Windows.UI.Notifications`,
+`winrt-Windows.UI.Notifications.Management`, `winrt-Windows.Foundation`,
+`winrt-Windows.Foundation.Collections`, `winrt-Windows.ApplicationModel`),
+all guarded by `sys_platform == 'win32'` like `pywin32` already is —
+anyone reproducing this environment from scratch should expect to hit the
+same chain of `ModuleNotFoundError`s if any one of these five is missing,
+and the fix each time is "install the specific winrt-* namespace package
+the traceback names," not a general WinRT setup problem.
+
+**`window.py`** gained the inbox view itself: a `view_mode` flag
+(`"pet"` / `"inbox"`) plus a child `QWidget` panel (a back button, a
+`QListWidget`, and a fallback `QLabel` for the two "nothing to show" states)
+built once in `_build_inbox_panel()` and shown/hidden rather than spawning
+a second window, per the spec. `open_inbox()` / `close_inbox()` grow and
+shrink the window via `_resize_anchored_bottom_right()`, which keeps the
+window's bottom-right corner fixed across the resize (using `QRect.moveBottomRight`,
+not manual arithmetic — an earlier manual-arithmetic version was off by one
+pixel because `QRect.bottomRight()` is inclusive; caught by an automated
+round-trip check, see Testing) so the inbox grows up-and-left from the same
+taskbar-adjacent spot instead of drifting or going off-screen, and closing
+it returns to the exact pixel position it had before opening.
+`set_inbox_items()` takes either the sentinel strings `INBOX_UNAVAILABLE` /
+`INBOX_ACCESS_NOT_GRANTED` (window-owned display copy, since the WinRT
+module itself shouldn't know UI text) or a real (possibly empty) list of
+`NotificationItem`.
+
+**`main.py`**'s `_fetch_inbox_snapshot()` does one `asyncio.run(...)` call,
+synchronously, from the click handler that opens the inbox — a deliberate
+simplification: unlike the Telegram feature (which needs a long-lived
+background event loop per the v1.3 spec), this is a single WinRT
+round-trip triggered by one click, so a brief block on the Qt UI thread was
+judged an acceptable trade for not introducing a second threading pattern
+into the app. Worth revisiting if it's ever felt as UI jank in practice.
+
+### Feature B: sulking & reconciliation
+
+**New pure module `src/gitten/attention.py`** — same discipline as
+`mood.py` / `status_badge.py` / `distraction.py`: no Qt imports, every
+timestamp passed in by the caller. `AttentionTracker` tracks
+`last_interaction_at` and a `state` (`NORMAL` / `SULKING`):
+
+- `register_interaction(now)` — any click or drag, in any state, resets the
+  clock. Called from `window.py`'s new `interacted` Qt signal, emitted on
+  every mouse press regardless of button.
+- `tick(now)` — promotes `NORMAL → SULKING` once `now - last_interaction_at
+  >= 30 minutes`, mirroring `MoodMachine.tick()`'s pattern exactly.
+- `register_pet(now)` — a plain click-in-place while `SULKING` increments
+  `pets_received`; `turn_stage(pets_received)` maps that to the spec's 5
+  discrete stages (0 = fully turned away .. 4 = fully reconciled), and
+  hitting stage 4 flips the state back to `NORMAL` and resets the counter.
+  No decay while partially reconciled, per the spec's explicit v1.2
+  simplification — confirmed by a test that ticks the clock forward a long
+  way mid-reconciliation and checks the partial stage holds steady.
+
+**`sprite.py`** gained `_draw_face_turned(painter, center, stage, t)` and a
+new optional `turn_stage: int | None` parameter on `paint_kitten` (default
+`None`, so every existing call site — the tray icon, v1.1's tests — keeps
+working unchanged, same additive-parameter pattern used for v1.1's
+badges/nudge). Stage 0 draws a faint center seam and nothing else (fully
+turned away); stages 1-3 progressively reveal a sliver of eye(s) and, at
+stage 3, a small mouth, reading as "glancing back over a shoulder" without
+changing the body/ear/tail proportions, so it's still recognizably the same
+cat. Stage 4 isn't a real rendering path — reaching it in `attention.py`
+means the state flips back to `NORMAL` and the normal front-facing
+mood/badge rendering resumes untouched.
+
+**The click-routing rule** (resolving the ambiguity between Features A and
+B) lives in `main.py`, not `window.py`: `window.py` only knows "a plain
+click happened while showing the pet view" (`plain_clicked` signal, emitted
+from `mouseReleaseEvent` only when the release wasn't part of a drag and
+`view_mode == "pet"`) and leaves the *meaning* of that click to
+`GittenApp._on_plain_click()`, which checks `attention_tracker.state`:
+`SULKING` → `register_pet()`; otherwise → open the inbox. This keeps
+`window.py` ignorant of the sulking/inbox semantics, matching how it
+already didn't know about mood-machine or distraction-tracker semantics
+before this session.
+
+### New timer
+
+A 5-second `QTimer` (`_on_attention_tick`, same cadence as the existing
+mood tick) calls `attention_tracker.tick()` so sulking kicks in even with
+zero interaction, and re-applies the resulting `AttentionState`/`turn_stage`
+to the window every tick — the same "periodic re-evaluation on top of
+event-driven updates" pattern `mood.py`'s tick already established.
+
+### Testing performed this session (v1.2)
+
+- `pytest -q` → **62/62 passed**: the 43 pre-existing tests plus 11 new
+  `test_attention.py` tests (default state, tick-seeds-the-clock,
+  under/over the 30-minute threshold, interaction resets in any state, a
+  drag/plain-interaction does *not* count as a pet, pets progressing
+  through stages 1-3 without early reconciliation, the 4th pet fully
+  reconciling, no-decay holding a partial stage steady, and petting while
+  already `NORMAL` being a no-op pet that's still an interaction) and 8 new
+  `test_notifications.py` tests for `format_notification` (multi-line
+  joining, blank-line skipping, missing text/app-name fallbacks, and all
+  four relative-time bands).
+- **Feature A was verified against this machine's real, live Windows
+  notification center**, not just mocked: `is_supported()` returned `True`,
+  `request_access()` returned `True` (access was already granted on this
+  machine), and `fetch_notifications()` returned actual real notifications
+  present here (a Chrome extension-update toast and an Edge taskbar-pin
+  prompt) with correctly formatted app names, joined text, and relative
+  timestamps. This is a meaningfully stronger check than was possible for
+  the v1.3 Telegram script, which has no test account available in this
+  environment.
+- Rendered all 4 sulking poses (`turn_stage=0..3`) plus the unchanged
+  normal front view off-screen via `QPixmap` (`QT_QPA_PLATFORM=offscreen`)
+  to confirm none of the new drawing code throws.
+- Instantiated a full headless `GittenApp` and drove the new wiring
+  end-to-end with real (non-mocked) calls: a plain click while `NORMAL`
+  correctly opened the inbox and populated the list with the real
+  notifications above; forcing `SULKING` and simulating 4 plain clicks
+  correctly walked `turn_stage` through 0 and back to `NORMAL`
+  (`pets_received` reset to 0) exactly as the unit tests predict in
+  isolation.
+- Caught and fixed a real off-by-one bug this way: an early version of
+  `_resize_anchored_bottom_right()` computed the new top-left with plain
+  `bottom_right - size` arithmetic, which is one pixel off because
+  `QRect.bottomRight()` is inclusive (`x + width - 1`). A round-trip test
+  (open the inbox, close it, assert the geometry is byte-for-byte identical
+  to before) caught the drift immediately; fixed by using
+  `QRect.moveBottomRight()` instead of manual arithmetic.
+
+**What wasn't verified this session**: the inbox panel's and sulking
+poses' actual on-screen appearance in a live running window (no interactive
+desktop session available here, same limitation noted for v1.1) — the
+off-screen renders and the headless wiring checks above confirm the code
+paths run correctly and touch real data, but eyeballing the layout/spacing
+of the inbox panel and the "glancing over its shoulder" poses on a real
+screen is worth doing before considering v1.2 fully polished.
+
+## 10. v1.3 (in progress) — Telegram connection, step 1: standalone script
 
 Input is `GITTEN_V1_3_SPEC.md`, which adds a Telegram ("userbot") connection
 that makes the kitten react differently to messages from favorite vs. bad
@@ -504,7 +686,7 @@ that's confirmed working, the next step is building `telegram_watcher.py`
 (the Qt-integrated, thread-based version with the favorites/bad list
 matching and signal emission) and only then wiring it into `main.py`.
 
-## 10. Working agreement for this project
+## 11. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was
