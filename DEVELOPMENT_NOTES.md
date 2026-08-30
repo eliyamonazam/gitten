@@ -1148,6 +1148,77 @@ precedence proof described above.
 
 ### Feature 5: High-five on double-click
 
+### Feature 5: High-five on double-click
+
+**The conflict the spec flagged, confirmed and resolved exactly as
+described**: Qt delivers a double-click as `mousePressEvent` ->
+`mouseReleaseEvent` -> `mousePressEvent` -> `mouseDoubleClickEvent` ->
+`mouseReleaseEvent` -- the *first* release already looks exactly like a
+complete, ordinary single click by the time it arrives, before Qt has told
+us a second one is coming. Before this feature, `mouseReleaseEvent` acted
+immediately on that first release (`plain_clicked.emit()`), which would
+have both opened the inbox (or registered a pet while sulking) **and**
+triggered the high-five on every double-click.
+
+**Fix**: `mouseReleaseEvent` no longer emits `plain_clicked` immediately.
+Instead, when a release qualifies as a plain click (`was_plain_click and
+view_mode == "pet"`), it starts a single-shot `_click_pending_timer` using
+`QApplication.doubleClickInterval()` -- deliberately the *same* interval
+Qt's own double-click detector uses internally, not an arbitrary
+hardcoded number, so a genuine second click is mathematically guaranteed to
+arrive (and be seen as `mouseDoubleClickEvent`) before our timer could fire
+first. Only when that timer actually elapses with nothing having cancelled
+it does `_on_click_confirmed_single()` finally emit `plain_clicked`. This
+applies uniformly to **both** existing single-click meanings (inbox-open
+and pet-registration) since neither `window.py` nor `main.py`'s
+`_on_plain_click` needed to change at all -- the disambiguation lives
+entirely upstream of the existing signal, per the spec's explicit
+instruction not to bypass it for either one.
+
+`mouseDoubleClickEvent` (new) stops `_click_pending_timer` (cancelling
+the deferred single-click action outright) and calls `_trigger_high_five()`.
+One more subtlety this session had to work through by hand-tracing the Qt
+event sequence: the *second* click's own trailing `mouseReleaseEvent` still
+arrives right after `mouseDoubleClickEvent` fires, and without any guard it
+would itself look like a fresh plain click and queue up a *second*,
+spurious pending single-click action ~400ms later. Fixed with a
+`self._just_double_clicked` flag, set in `mouseDoubleClickEvent` and
+consumed (reset, without starting a new pending timer) by the very next
+`mouseReleaseEvent`.
+
+**The high-five animation itself**: `_trigger_high_five()` sets
+`self._high_fiving = True`, repaints, and calls `QTimer.singleShot(1300,
+self._clear_high_five)` -- the "boolean flag + `QTimer.singleShot` to clear
+it" idiom the spec pointed at (v1.3's Telegram alert lifecycle was
+mentioned as prior art for this idiom, though per section 10 that lifecycle
+was never actually wired into `main.py` -- this is the first place in the
+codebase the pattern is actually implemented). Rendering-wise,
+`_draw_high_five_paw` (new in `sprite.py`) doesn't touch the face or mood
+at all -- it's a small raised paw pad with three toe bumps, gently
+wobbling, drawn as the very last thing in `paint_kitten` regardless of
+mood/sulking/purr/focused. Keeping it purely additive like this sidesteps
+any precedence question entirely (no face-override conflict to resolve)
+and means even a mid-sulk double-click gets a quick, charming high-five
+before reverting to the turned-away pose once it clears.
+
+**Testing**: `pytest -q` -> still **104/104 passed** (Qt wiring + drawing
+only, no new pure-logic module). End-to-end, with real synthetic
+`QMouseEvent`s driven through a live `KittenWindow` and a real Qt event
+loop (`app.processEvents()` pumped across the actual
+`QApplication.doubleClickInterval()`, 400ms in this environment): (1) a
+genuine single click emits `plain_clicked` exactly once, only after the
+interval elapses, never before, and never triggers `_high_fiving`; (2) a
+genuine double-click (press/release/press/doubleClick/release) sets
+`_high_fiving` immediately and **never** emits `plain_clicked` -- not on
+the first release, not on the trailing release, and not even after waiting
+well past the interval, confirming the leaked-second-action bug described
+above is actually fixed, not just theorized about; (2b) `_high_fiving`
+self-clears back to `False` after its ~1.3s duration; (3) a real drag
+(press, move past the threshold, release) triggers neither action.
+Separately rendered `high_five=True` combined with sulking, with hovering,
+and alone, off-screen, to confirm the additive paw overlay never throws
+regardless of what else is showing.
+
 ### Feature 6: Nameable cat
 
 ### Feature 7: Seasonal accessories & day/night palette

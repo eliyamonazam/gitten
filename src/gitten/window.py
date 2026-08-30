@@ -7,6 +7,7 @@ import time
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QMouseEvent, QPainter, QPaintEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -38,6 +39,8 @@ _DRAG_PARTICLE_INTERVAL_SECONDS = 2 * ANIMATION_INTERVAL_MS / 1000.0
 _DRAG_PARTICLE_LIFESPAN_SECONDS = 0.5
 
 _SHOOTING_STAR_LIFESPAN_SECONDS = 1.0
+
+_HIGH_FIVE_DURATION_SECONDS = 1.3
 
 # Shown in the inbox view for the two distinct "nothing to show" causes the
 # v1.2 spec calls out -- kept as plain strings (not exceptions) so
@@ -84,6 +87,19 @@ class KittenWindow(QWidget):
         self._particles = ParticleSystem()
         self._last_particle_spawn_at = 0.0
         self._hovering = False
+
+        # Single/double-click disambiguation (Feature 5): a double-click is,
+        # at the Qt event level, still a single click first -- Qt delivers
+        # press/release/press/doubleClick/release in that order. So a plain
+        # click's action (open inbox / register a pet) is never applied
+        # immediately on release; it's deferred behind this timer, using the
+        # same interval Qt itself uses to detect double-clicks, so a genuine
+        # second click is always guaranteed to arrive (and cancel it) first.
+        self._click_pending_timer = QTimer(self)
+        self._click_pending_timer.setSingleShot(True)
+        self._click_pending_timer.timeout.connect(self._on_click_confirmed_single)
+        self._just_double_clicked = False
+        self._high_fiving = False
 
         self._view_mode = "pet"  # or "inbox"
         self._attention_state = AttentionState.NORMAL
@@ -302,6 +318,7 @@ class KittenWindow(QWidget):
             streak=self._streak,
             focused=self._focused,
             hovering=self._hovering,
+            high_five=self._high_fiving,
         )
 
     def enterEvent(self, event) -> None:
@@ -345,9 +362,37 @@ class KittenWindow(QWidget):
         if event.button() == Qt.LeftButton:
             was_plain_click = not self._drag_moved
             self._dragging = False
-            if was_plain_click and self._view_mode == "pet":
-                self.plain_clicked.emit()
+            if self._just_double_clicked:
+                # This is the trailing release of a double-click we already
+                # handled in mouseDoubleClickEvent -- don't also queue up a
+                # single-click action for it.
+                self._just_double_clicked = False
+            elif was_plain_click and self._view_mode == "pet":
+                # Don't act yet -- a genuine double-click may still arrive.
+                # See the disambiguation comment in __init__.
+                self._click_pending_timer.start(QApplication.doubleClickInterval())
             event.accept()
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.LeftButton and self._view_mode == "pet":
+            self._click_pending_timer.stop()
+            self._just_double_clicked = True
+            self._trigger_high_five()
+            event.accept()
+
+    def _on_click_confirmed_single(self) -> None:
+        """The pending-click timer elapsed with no second click arriving --
+        this really was a single click, so now (and only now) it counts."""
+        self.plain_clicked.emit()
+
+    def _trigger_high_five(self) -> None:
+        self._high_fiving = True
+        self.update()
+        QTimer.singleShot(int(_HIGH_FIVE_DURATION_SECONDS * 1000), self._clear_high_five)
+
+    def _clear_high_five(self) -> None:
+        self._high_fiving = False
+        self.update()
 
     def moveEvent(self, event) -> None:
         super().moveEvent(event)

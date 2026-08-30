@@ -62,6 +62,7 @@ def paint_kitten(
     streak: int = 0,
     focused: bool = False,
     hovering: bool = False,
+    high_five: bool = False,
 ) -> None:
     painter.save()
     painter.setRenderHint(QPainter.Antialiasing, True)
@@ -117,6 +118,12 @@ def paint_kitten(
     if nudge_text and nudge_opacity > 0.0:
         _draw_nudge_wave(painter, center, t)
         _draw_speech_bubble(painter, center, nudge_text, nudge_opacity)
+
+    # The high-five doesn't change the face/mood at all -- it's purely an
+    # additive raised-paw overlay, drawn last (on top of everything else),
+    # so it never has to compete with sulking/purr/focused precedence.
+    if high_five:
+        _draw_high_five_paw(painter, center, t)
 
     painter.restore()
 
@@ -742,4 +749,26 @@ def _draw_speech_bubble(painter: QPainter, center: QPointF, text: str, opacity: 
 
     painter.setPen(OUTLINE_COLOR)
     painter.drawText(bubble, Qt.AlignCenter, text)
+    painter.restore()
+
+
+# -- high five --------------------------------------------------------------
+
+
+def _draw_high_five_paw(painter: QPainter, center: QPointF, t: float) -> None:
+    painter.save()
+    wobble = 1.5 * math.sin(t * 10.0)
+    paw_x = center.x() + BODY_RX * 0.85 + wobble
+    paw_y = center.y() - BODY_RY * 0.75
+
+    pen = _outline_pen(1.6)
+    painter.setPen(pen)
+    painter.setBrush(BODY_HIGHLIGHT)
+    pad_radius = 7.5
+    painter.drawEllipse(QPointF(paw_x, paw_y), pad_radius, pad_radius)
+
+    # three small toe bumps along the top of the pad
+    for dx in (-4.0, 0.0, 4.0):
+        toe = QPointF(paw_x + dx, paw_y - pad_radius + 1.5)
+        painter.drawEllipse(toe, 2.2, 2.2)
     painter.restore()
