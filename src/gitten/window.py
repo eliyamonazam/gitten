@@ -160,6 +160,10 @@ class KittenWindow(QWidget):
         self._nudge_text = text
         self._nudge_started_at = time.monotonic()
 
+    @property
+    def is_nudging(self) -> bool:
+        return self._nudge_text is not None
+
     def set_context_menu_callback(self, callback) -> None:
         self._context_menu_requested_callback = callback
 

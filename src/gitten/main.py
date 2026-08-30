@@ -31,6 +31,7 @@ from gitten.git_watcher import GitWatcher, count_commits_today, get_commit_strea
 from gitten.mood import Mood, MoodMachine
 from gitten.notifications import fetch_notifications, request_access
 from gitten.notifications import is_supported as notifications_supported
+from gitten.oneliners import pick_oneliner, random_interval_seconds, should_show_oneliner
 from gitten.sprite import paint_kitten
 from gitten.status_badge import StatusBadgeTracker
 from gitten.system_monitor import is_focus_process_running, sample_system
@@ -125,6 +126,11 @@ class GittenApp:
         self._focus_timer = QTimer()
         self._focus_timer.timeout.connect(self._on_focus_tick)
         self._focus_timer.start(FOCUS_POLL_INTERVAL_MS)
+
+        self._oneliner_timer = QTimer()
+        self._oneliner_timer.setSingleShot(True)
+        self._oneliner_timer.timeout.connect(self._on_oneliner_timer)
+        self._schedule_next_oneliner()
 
         self.window.show()
 
@@ -302,6 +308,22 @@ class GittenApp:
 
     def _on_focus_tick(self) -> None:
         self.window.set_focused(is_focus_process_running(self.focus_substrings))
+
+    def _schedule_next_oneliner(self) -> None:
+        self._oneliner_timer.start(int(random_interval_seconds() * 1000))
+
+    def _on_oneliner_timer(self) -> None:
+        """Fires on a random 45-90 minute cadence. Only actually shows the
+        line if the cat is currently idle in its normal "pet" view -- not
+        sulking, not in the notification inbox, not already showing another
+        nudge. (There's no "mid-Telegram-alert" state to check yet, since
+        the v1.3 Telegram reactions were never wired into main.py -- add
+        that check here too once they are.) Otherwise this occurrence is
+        silently skipped and the next one is rescheduled regardless."""
+        is_sulking = self.attention_tracker.state == AttentionState.SULKING
+        if should_show_oneliner(self.window.view_mode, is_sulking, self.window.is_nudging):
+            self.window.show_nudge(pick_oneliner())
+        self._schedule_next_oneliner()
 
     def run(self) -> int:
         return self.app.exec()

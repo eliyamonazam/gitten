@@ -903,6 +903,67 @@ Feature 2, since this feature added no new pure-logic module).
 
 ### Feature 4: Random cute one-liners
 
+**New pure module `src/gitten/oneliners.py`** -- three small pieces, all
+following the same "inject the nondeterministic input" idiom `mood.py` uses
+for the clock, applied here to the RNG instead (`rng: random.Random | None
+= None`, defaulting to the module-level `random` in production but
+seedable in tests):
+
+- `ONELINERS` -- the starter list (the spec's four example lines plus six
+  more in the same short, friendly, programmer-flavored Persian tone).
+- `random_interval_seconds(rng, min_minutes=45, max_minutes=90)` -- a
+  uniform random interval for the next one-liner.
+- `pick_oneliner(rng)` -- a random line from the list.
+- `should_show_oneliner(view_mode, is_sulking, is_nudging)` -- the pure
+  decision of whether *now* is a good moment to interrupt: only when
+  `view_mode == "pet"` and neither sulking nor already showing another
+  nudge. Deliberately takes plain `str`/`bool` arguments rather than
+  importing `AttentionState` or any Qt type, so it stays trivially testable
+  and `window.py`/`main.py` stay the source of truth for what those states
+  actually mean.
+
+No new rendering was needed, per the spec: this reuses `window.py`'s
+existing `show_nudge` / opacity-fade timeline unchanged. The one small
+addition to `window.py` is a read-only `is_nudging` property (`self.
+_nudge_text is not None`) so `main.py` can check "is a nudge already
+showing" without reaching into the window's private state.
+
+**`main.py`** wiring: a single-shot `QTimer` (`_oneliner_timer`) is
+(re)started with `random_interval_seconds() * 1000` ms both at startup and
+at the end of every firing (`_schedule_next_oneliner`), so the cadence is
+freshly randomized each time rather than fixed. `_on_oneliner_timer` checks
+`should_show_oneliner(self.window.view_mode, is_sulking, self.window.
+is_nudging)` -- `is_sulking` read from `self.attention_tracker.state`, the
+same source of truth `_apply_attention` already uses -- and calls
+`self.window.show_nudge(pick_oneliner())` only if it returns `True`;
+either way the next occurrence is always rescheduled, so a skipped
+occurrence doesn't mean waiting an extra cycle, it's just silently dropped
+and tried again next time per the spec ("skip and reschedule rather than
+interrupting something else"). A comment notes that there's no
+"mid-Telegram-alert" state to check yet, since the v1.3 Telegram reactions
+were deliberately never wired into `main.py` (see section 10) -- that
+check should be added here once they are, so a future session doesn't miss
+it.
+
+**Testing**: `pytest -q` -> **92/92 passed** (82 pre-existing + 10 new
+`test_oneliners.py` tests: interval bounds held across 500 seeded draws,
+custom min/max bounds respected, determinism given the same seed,
+`pick_oneliner` always returning a list member, the starter list having at
+least 8 lines, and all four `should_show_oneliner` combinations -- shows
+when clear, skips when sulking, skips when already nudging, skips when in
+the inbox view, and skips when everything is going on at once). Also ran a
+full headless end-to-end check against a real, running `GittenApp`
+instance (not mocked): forced each of the four gating states in turn and
+called `_on_oneliner_timer()` directly -- confirmed it actually calls
+`window.show_nudge(...)` with one of the real Persian lines when idle in
+the pet view, correctly does nothing when sulking or in the inbox view
+(while still leaving the timer active/rescheduled for next time), and does
+not overwrite an already-showing nudge's text. Separately rendered all 10
+one-liners through `paint_kitten`'s existing nudge-bubble path off-screen
+to confirm none of them throw.
+
+With this, all four v1.4 features are implemented, tested, and documented.
+
 ## 13. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
