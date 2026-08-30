@@ -1221,6 +1221,73 @@ regardless of what else is showing.
 
 ### Feature 6: Nameable cat
 
+### Feature 6: Nameable cat
+
+`main.py` loads `self.cat_name = self.settings.value("cat/name",
+DEFAULT_CAT_NAME)` at startup (`DEFAULT_CAT_NAME = "Gitten"`) and adds a
+"Rename..." tray menu entry, right next to "Choose watched repo..." (built
+together with Feature 7's "Set my birthday..." per the spec's suggestion --
+both are simple one-time `QSettings`-backed `QInputDialog` prompts).
+`_prompt_rename()` uses `QInputDialog.getText(..., text=self.cat_name)` so
+the field is pre-filled with the current name, only commits the change on
+`ok and name.strip()` (a cancelled dialog or an all-whitespace name is a
+no-op, not a reset to blank), and persists via
+`self.settings.setValue("cat/name", self.cat_name)` -- the same `QSettings`
+object already used for window position/watched repo.
+
+A new `_update_tray_tooltip()` helper is now the single place that sets the
+tray tooltip (`"{name} -- watching {path}"` or just `"{name}"` with no repo
+chosen), replacing two previously-separate hardcoded tooltip strings in
+`_build_tray` and `_prompt_choose_repo` -- so renaming immediately updates
+the tooltip without those two call sites needing to independently remember
+to include the name.
+
+The stats menu gained a `"-- {name} --"` header line (ASCII double-hyphen,
+matching this codebase's existing convention of writing `--` instead of an
+em-dash everywhere else in UI/doc text, rather than the spec example's
+literal em-dash) as the first entry, above the existing Streak/Commits-
+today/battery/repo/uptime lines.
+
+**A real testing obstacle hit and worked around**: this session first
+tried to verify the stats menu's header text by monkeypatching
+`QMenu.exec` with `unittest.mock.patch.object` (to avoid actually blocking
+on a real popup in this headless environment) and calling
+`_show_context_menu` directly. That didn't just fail to work -- it silently
+corrupted the `QMenu` instance entirely: a `QMenu()` built and populated
+*inside* the same `with patch.object(...)` block came back from
+`.actions()` as an *empty list*, even though `addAction` had definitely
+been called on it, with no error raised anywhere. Patching a compiled
+Shiboken-bound Qt method this way is evidently unsafe in this PySide6
+version, not just ineffective, and a naive test relying on it would have
+silently reported false confidence. **Fixed properly, not worked around**:
+extracted the menu's info-line text into a new `_stats_menu_lines(self) ->
+list[str]` helper (pure list-of-strings logic, called by
+`_show_context_menu` to build the actual disabled `QAction`s) so the header
+text can be exercised directly with a plain function call and no `QMenu`
+involved at all -- no monkeypatching of any kind needed. Worth remembering
+for future sessions: don't monkeypatch Qt/Shiboken class methods
+(`QMenu.exec`, and likely other compiled Qt methods generally) to avoid a
+blocking call in tests; refactor the piece worth testing out into a plain
+Python helper instead.
+
+**Testing**: `pytest -q` -> still **104/104 passed** (no new pure-logic
+*module* -- `_stats_menu_lines` lives on `GittenApp` itself, closer to the
+class's existing untested Qt-wiring methods than to a `mood.py`-style
+standalone module, so it wasn't worth a separate test file for one method).
+End-to-end against a real `GittenApp`: confirmed the default name is
+`"Gitten"` and appears in the initial tray tooltip; patched
+`QInputDialog.getText` to return `("Whiskers", True)` and confirmed
+`cat_name` updated, the tooltip updated to include it alongside the watched
+repo path, and the value round-tripped through the real (registry-backed)
+`QSettings` -- read back via a *separate* fresh `QSettings("Gitten",
+"Gitten")` handle, not just the same object, to prove real persistence
+rather than in-memory state; confirmed a cancelled dialog (`ok=False`) and
+an all-whitespace name (`"   "`) both correctly leave the name unchanged;
+and confirmed `_stats_menu_lines()` returns the `"-- {name} --"` header as
+its first element. The registry-backed settings value was reset back to
+the default at the end of the check script so this session's testing
+doesn't leave a stray "Whiskers" behind for the real app.
+
 ### Feature 7: Seasonal accessories & day/night palette
 
 ## 14. Working agreement for this project

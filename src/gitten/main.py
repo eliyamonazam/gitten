@@ -11,6 +11,7 @@ from PySide6.QtGui import QAction, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QInputDialog,
     QMenu,
     QMessageBox,
     QSystemTrayIcon,
@@ -50,6 +51,7 @@ DISTRACTION_POLL_INTERVAL_MS = 3000
 ATTENTION_TICK_INTERVAL_MS = 5000
 FOCUS_POLL_INTERVAL_MS = 5000
 NUDGE_MESSAGE = "یه وقفه کوتاه چطوره؟"
+DEFAULT_CAT_NAME = "Gitten"
 
 
 def _fetch_inbox_snapshot():
@@ -90,6 +92,7 @@ class GittenApp:
         self.app.setQuitOnLastWindowClosed(False)
 
         self.settings = QSettings(ORG_NAME, APP_NAME)
+        self.cat_name = self.settings.value("cat/name", DEFAULT_CAT_NAME)
         self.mood_machine = MoodMachine()
         self.badge_tracker = StatusBadgeTracker()
         self.distraction_tracker = DistractionTracker()
@@ -155,12 +158,16 @@ class GittenApp:
 
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(_make_icon(Mood.IDLE))
-        self.tray.setToolTip("Gitten")
+        self._update_tray_tooltip()
 
         menu = QMenu()
         self.repo_action = QAction("Choose watched repo...")
         self.repo_action.triggered.connect(lambda: self._prompt_choose_repo(required=False))
         menu.addAction(self.repo_action)
+
+        rename_action = QAction("Rename...")
+        rename_action.triggered.connect(self._prompt_rename)
+        menu.addAction(rename_action)
 
         menu.addSeparator()
         quit_action = QAction("Quit Gitten")
@@ -170,6 +177,19 @@ class GittenApp:
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
+
+    def _update_tray_tooltip(self) -> None:
+        if self.watcher.repo_path is not None:
+            self.tray.setToolTip(f"{self.cat_name} -- watching {self.watcher.repo_path}")
+        else:
+            self.tray.setToolTip(self.cat_name)
+
+    def _prompt_rename(self) -> None:
+        name, ok = QInputDialog.getText(None, "Gitten", "Cat's name:", text=self.cat_name)
+        if ok and name.strip():
+            self.cat_name = name.strip()
+            self.settings.setValue("cat/name", self.cat_name)
+            self._update_tray_tooltip()
 
     def _on_tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.DoubleClick:
@@ -181,24 +201,7 @@ class GittenApp:
         dashboard. Separate from (and in addition to) the tray icon's menu."""
         menu = QMenu()
 
-        if self.watcher.repo_path is not None:
-            commits = count_commits_today(self.watcher.repo_path)
-            commits_text = (
-                f"Commits today: {commits}" if commits is not None else "Commits today: --"
-            )
-            streak = get_commit_streak(self.watcher.repo_path)
-            streak_text = f"Streak: {streak} day(s)" if streak is not None else "Streak: --"
-            repo_text = f"Watching: {self.watcher.repo_path}"
-        else:
-            commits_text = "Commits today: --"
-            streak_text = "Streak: --"
-            repo_text = "Watching: (no repo chosen)"
-
-        battery = psutil.sensors_battery()
-        battery_text = f"Battery: {battery.percent:.0f}%" if battery else "Battery: n/a"
-        uptime_text = f"Running for: {self._format_uptime()}"
-
-        for text in (commits_text, streak_text, battery_text, repo_text, uptime_text):
+        for text in self._stats_menu_lines():
             info_action = QAction(text)
             info_action.setEnabled(False)
             menu.addAction(info_action)
@@ -213,6 +216,34 @@ class GittenApp:
         menu.addAction(quit_action)
 
         menu.exec(global_pos)
+
+    def _stats_menu_lines(self) -> list[str]:
+        """The disabled info lines shown at the top of the right-click stats
+        menu, in order: a "-- {name} --" header, then commits/streak/
+        battery/repo/uptime. Pulled out of `_show_context_menu` so it can be
+        exercised directly without going through a real, blocking
+        `QMenu.exec()` popup -- that's not something this project's headless
+        test tooling can drive safely (see the v1.5 Feature 6 dev notes)."""
+        lines = [f"-- {self.cat_name} --"]
+
+        if self.watcher.repo_path is not None:
+            commits = count_commits_today(self.watcher.repo_path)
+            lines.append(
+                f"Commits today: {commits}" if commits is not None else "Commits today: --"
+            )
+            streak = get_commit_streak(self.watcher.repo_path)
+            lines.append(f"Streak: {streak} day(s)" if streak is not None else "Streak: --")
+            repo_text = f"Watching: {self.watcher.repo_path}"
+        else:
+            lines.append("Commits today: --")
+            lines.append("Streak: --")
+            repo_text = "Watching: (no repo chosen)"
+
+        battery = psutil.sensors_battery()
+        lines.append(f"Battery: {battery.percent:.0f}%" if battery else "Battery: n/a")
+        lines.append(repo_text)
+        lines.append(f"Running for: {self._format_uptime()}")
+        return lines
 
     def _format_uptime(self) -> str:
         seconds = int(time.monotonic() - self._session_start)
@@ -237,7 +268,7 @@ class GittenApp:
             return
         if self.watcher.set_repo(path):
             self.settings.setValue("repo/path", path)
-            self.tray.setToolTip(f"Gitten -- watching {path}")
+            self._update_tray_tooltip()
         else:
             QMessageBox.warning(
                 None, "Gitten", f"'{path}' doesn't look like a git repository."
