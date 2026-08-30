@@ -1,0 +1,521 @@
+"""QPainter drawing code for the kitten.
+
+Everything is drawn with primitive shapes (ellipses, triangles, painter
+paths) in a fixed 128x128 logical coordinate space -- no external art
+assets. `paint_kitten` is pure with respect to Qt widget state: give it a
+painter, a target rect, a mood, and a monotonically increasing time in
+seconds, and it draws one animated frame.
+"""
+
+from __future__ import annotations
+
+import math
+
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetricsF,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QRadialGradient,
+)
+
+from gitten.mood import Mood
+from gitten.status_badge import Badge
+
+BODY_COLOR = QColor("#E8935F")
+BODY_HIGHLIGHT = QColor("#F7B98F")
+INNER_EAR_COLOR = QColor("#F5B98A")
+OUTLINE_COLOR = QColor("#2C2C2A")
+WHITE = QColor("#FFFFFF")
+SHADOW_COLOR = QColor(0, 0, 0, 60)
+ZZZ_COLOR = QColor(120, 120, 128, 220)
+
+CANVAS = 128.0
+CENTER = QPointF(CANVAS / 2, 70.0)
+BODY_RX, BODY_RY = 34.0, 30.0
+
+_OUTLINE_PEN_WIDTH = 2.6
+
+
+def _outline_pen(width: float = _OUTLINE_PEN_WIDTH) -> QPen:
+    pen = QPen(OUTLINE_COLOR)
+    pen.setWidthF(width)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    return pen
+
+
+def paint_kitten(
+    painter: QPainter,
+    rect: QRectF,
+    mood: Mood,
+    t: float,
+    dragging: bool = False,
+    badge: Badge | None = None,
+    nudge_text: str | None = None,
+    nudge_opacity: float = 0.0,
+) -> None:
+    painter.save()
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setRenderHint(QPainter.TextAntialiasing, True)
+
+    scale = min(rect.width(), rect.height()) / CANVAS
+    painter.translate(rect.center())
+    painter.scale(scale, scale)
+    painter.translate(-CANVAS / 2, -CANVAS / 2)
+
+    breathe = 1.0 + 0.018 * math.sin(t * 2.0)
+    bob = 1.5 * math.sin(t * 2.0) if not dragging else 0.0
+    tail_phase = math.sin(t * 1.6) * 0.5 + math.sin(t * 0.7) * 0.2
+    jitter_x = 0.6 * math.sin(t * 14.0) if mood == Mood.WAITING else 0.0
+
+    center = QPointF(CENTER.x() + jitter_x, CENTER.y() + bob)
+
+    _draw_shadow(painter, center)
+    _draw_tail(painter, center, tail_phase)
+    _draw_ears(painter, center, breathe)
+    _draw_body(painter, center, breathe)
+    _draw_face(painter, center, mood, t)
+    _draw_mood_overlay(painter, center, mood, t)
+
+    if badge is not None and badge != Badge.NONE:
+        _draw_status_badge(painter, center, badge, t)
+
+    if nudge_text and nudge_opacity > 0.0:
+        _draw_nudge_wave(painter, center, t)
+        _draw_speech_bubble(painter, center, nudge_text, nudge_opacity)
+
+    painter.restore()
+
+
+def _draw_shadow(painter: QPainter, center: QPointF) -> None:
+    painter.save()
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(SHADOW_COLOR)
+    shadow_rect = QRectF(0, 0, BODY_RX * 2.1, 10.0)
+    shadow_rect.moveCenter(QPointF(center.x(), center.y() + BODY_RY + 8))
+    painter.drawEllipse(shadow_rect)
+    painter.restore()
+
+
+def _draw_tail(painter: QPainter, center: QPointF, phase: float) -> None:
+    painter.save()
+    pen = _outline_pen(9.0)
+    pen.setColor(BODY_COLOR)
+    painter.setPen(pen)
+
+    base = QPointF(center.x() + BODY_RX * 0.75, center.y() + BODY_RY * 0.55)
+    sway = 14.0 * phase
+    c1 = QPointF(base.x() + 22, base.y() + 6 + sway * 0.4)
+    c2 = QPointF(base.x() + 26, base.y() - 20 + sway)
+    end = QPointF(base.x() + 14, base.y() - 34 + sway * 1.3)
+
+    path = QPainterPath(base)
+    path.cubicTo(c1, c2, end)
+    painter.drawPath(path)
+
+    # thin dark outline stroke on top for definition
+    outline = _outline_pen(1.4)
+    painter.setPen(outline)
+    painter.setBrush(Qt.NoBrush)
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_ears(painter: QPainter, center: QPointF, breathe: float) -> None:
+    painter.save()
+    painter.setPen(_outline_pen())
+    for side in (-1, 1):
+        ex = center.x() + side * BODY_RX * 0.62
+        ey = center.y() - BODY_RY * 0.82
+        outer = [
+            QPointF(ex - 13 * side, ey + 6),
+            QPointF(ex + 4 * side, ey - 24 * breathe),
+            QPointF(ex + 15 * side, ey + 10),
+        ]
+        painter.setBrush(BODY_COLOR)
+        _draw_polygon(painter, outer)
+
+        inner = [
+            QPointF(ex - 6 * side, ey + 3),
+            QPointF(ex + 3 * side, ey - 12 * breathe),
+            QPointF(ex + 9 * side, ey + 5),
+        ]
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(INNER_EAR_COLOR)
+        _draw_polygon(painter, inner)
+        painter.setPen(_outline_pen())
+    painter.restore()
+
+
+def _draw_polygon(painter: QPainter, pts) -> None:
+    path = QPainterPath()
+    path.moveTo(pts[0])
+    for p in pts[1:]:
+        path.lineTo(p)
+    path.closeSubpath()
+    painter.drawPath(path)
+
+
+def _draw_body(painter: QPainter, center: QPointF, breathe: float) -> None:
+    painter.save()
+    rect = QRectF(0, 0, BODY_RX * 2, BODY_RY * 2 * breathe)
+    rect.moveCenter(center)
+
+    gradient = QRadialGradient(
+        QPointF(center.x() - BODY_RX * 0.35, center.y() - BODY_RY * 0.5),
+        BODY_RX * 1.6,
+    )
+    gradient.setColorAt(0.0, BODY_HIGHLIGHT)
+    gradient.setColorAt(1.0, BODY_COLOR)
+
+    painter.setPen(_outline_pen())
+    painter.setBrush(gradient)
+    painter.drawEllipse(rect)
+    painter.restore()
+
+
+def _draw_face(painter: QPainter, center: QPointF, mood: Mood, t: float) -> None:
+    if mood == Mood.IDLE:
+        _draw_idle_face(painter, center)
+    elif mood == Mood.HAPPY:
+        _draw_happy_face(painter, center)
+    else:
+        _draw_waiting_face(painter, center, t)
+
+
+def _draw_idle_face(painter: QPainter, center: QPointF) -> None:
+    painter.save()
+    pen = _outline_pen(2.2)
+    painter.setPen(pen)
+    eye_y = center.y() - 2
+    for side in (-1, 1):
+        ex = center.x() + side * 11
+        path = QPainterPath(QPointF(ex - 5, eye_y))
+        path.quadTo(QPointF(ex, eye_y + 3), QPointF(ex + 5, eye_y))
+        painter.drawPath(path)
+
+    mouth_y = center.y() + 10
+    path = QPainterPath(QPointF(center.x() - 4, mouth_y))
+    path.quadTo(QPointF(center.x(), mouth_y + 3), QPointF(center.x() + 4, mouth_y))
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_happy_face(painter: QPainter, center: QPointF) -> None:
+    painter.save()
+    pen = _outline_pen(2.4)
+    painter.setPen(pen)
+    eye_y = center.y() - 3
+    for side in (-1, 1):
+        ex = center.x() + side * 11
+        path = QPainterPath(QPointF(ex - 6, eye_y + 3))
+        path.quadTo(QPointF(ex, eye_y - 6), QPointF(ex + 6, eye_y + 3))
+        painter.drawPath(path)
+
+    mouth_y = center.y() + 9
+    path = QPainterPath(QPointF(center.x() - 8, mouth_y - 2))
+    path.quadTo(QPointF(center.x(), mouth_y + 7), QPointF(center.x() + 8, mouth_y - 2))
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_waiting_face(painter: QPainter, center: QPointF, t: float) -> None:
+    painter.save()
+    look = 1.4 * math.sin(t * 1.3)
+    eye_y = center.y() - 3
+
+    for side in (-1, 1):
+        ex = center.x() + side * 11
+        eye_rect = QRectF(0, 0, 11, 11)
+        eye_rect.moveCenter(QPointF(ex, eye_y))
+        painter.setPen(_outline_pen(1.8))
+        painter.setBrush(WHITE)
+        painter.drawEllipse(eye_rect)
+
+        pupil_rect = QRectF(0, 0, 4.2, 4.2)
+        pupil_rect.moveCenter(QPointF(ex + look, eye_y + 1))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(OUTLINE_COLOR)
+        painter.drawEllipse(pupil_rect)
+
+        brow_pen = _outline_pen(2.2)
+        painter.setPen(brow_pen)
+        by = eye_y - 9
+        bx0 = QPointF(ex - 6, by + (2 if side < 0 else 0))
+        bx1 = QPointF(ex + 6, by + (0 if side < 0 else 2))
+        painter.drawLine(bx0, bx1)
+
+    mouth_y = center.y() + 11
+    pen = _outline_pen(2.0)
+    painter.setPen(pen)
+    path = QPainterPath(QPointF(center.x() - 6, mouth_y))
+    path.quadTo(QPointF(center.x() - 3, mouth_y + 3), QPointF(center.x(), mouth_y))
+    path.quadTo(QPointF(center.x() + 3, mouth_y - 3), QPointF(center.x() + 6, mouth_y))
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_mood_overlay(painter: QPainter, center: QPointF, mood: Mood, t: float) -> None:
+    if mood == Mood.IDLE:
+        _draw_zzz(painter, center, t)
+    elif mood == Mood.HAPPY:
+        _draw_heart(painter, center, t)
+    else:
+        _draw_exclaim_bubble(painter, center, t)
+
+
+def _draw_zzz(painter: QPainter, center: QPointF, t: float) -> None:
+    painter.save()
+    font = QFont("Comic Sans MS", 10)
+    font.setItalic(True)
+    painter.setFont(font)
+
+    top = QPointF(center.x() + BODY_RX * 0.5, center.y() - BODY_RY * 1.35)
+    letters = "zzz"
+    for i, ch in enumerate(letters):
+        cycle = 3.0
+        phase = (t * 0.5 + i * 0.33) % 1.0
+        rise = phase * 16.0
+        alpha = int(220 * (1.0 - phase))
+        size = 7 + i * 2
+        f = QFont(font)
+        f.setPointSizeF(size)
+        painter.setFont(f)
+        color = QColor(ZZZ_COLOR)
+        color.setAlpha(max(0, alpha))
+        painter.setPen(color)
+        pos = QPointF(top.x() + i * 5, top.y() - rise)
+        painter.drawText(pos, ch)
+    painter.restore()
+
+
+def _draw_heart(painter: QPainter, center: QPointF, t: float) -> None:
+    painter.save()
+    pulse = 1.0 + 0.12 * math.sin(t * 5.0)
+    hx = center.x()
+    hy = center.y() - BODY_RY * 1.55
+    size = 8.0 * pulse
+
+    path = QPainterPath()
+    path.moveTo(hx, hy + size * 0.6)
+    path.cubicTo(
+        hx - size * 1.3, hy - size * 0.5,
+        hx - size * 0.4, hy - size * 1.5,
+        hx, hy - size * 0.4,
+    )
+    path.cubicTo(
+        hx + size * 0.4, hy - size * 1.5,
+        hx + size * 1.3, hy - size * 0.5,
+        hx, hy + size * 0.6,
+    )
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor("#F06292"))
+    painter.drawPath(path)
+
+    for i in range(3):
+        sparkle_phase = (t * 0.8 + i * 0.33) % 1.0
+        sx = hx + (i - 1) * 16
+        sy = hy - 14 - sparkle_phase * 14
+        alpha = int(255 * (1.0 - sparkle_phase))
+        color = QColor("#FFD54F")
+        color.setAlpha(max(0, alpha))
+        painter.setBrush(color)
+        r = 2.2
+        painter.drawEllipse(QPointF(sx, sy), r, r)
+    painter.restore()
+
+
+def _draw_exclaim_bubble(painter: QPainter, center: QPointF, t: float) -> None:
+    painter.save()
+    bounce = 2.0 * abs(math.sin(t * 3.0))
+    bx = center.x() + BODY_RX * 0.55
+    by = center.y() - BODY_RY * 1.45 - bounce
+
+    radius = 11.0
+    painter.setPen(_outline_pen(2.0))
+    painter.setBrush(WHITE)
+    painter.drawEllipse(QPointF(bx, by), radius, radius)
+
+    font = QFont("Segoe UI", 12, QFont.Bold)
+    painter.setFont(font)
+    painter.setPen(_outline_pen(1.4))
+    metrics = QFontMetricsF(font)
+    text = "!"
+    tw = metrics.horizontalAdvance(text)
+    th = metrics.ascent()
+    painter.drawText(QPointF(bx - tw / 2, by + th / 2 - 1), text)
+    painter.restore()
+
+
+# -- status badges ------------------------------------------------------
+# A separate overlay layer from mood: at most one small icon shown near the
+# top-left of the head, on top of whatever mood is currently displayed.
+
+_BADGE_POS_OFFSET = QPointF(-BODY_RX * 0.85, -BODY_RY * 1.15)
+
+
+def _draw_status_badge(painter: QPainter, center: QPointF, badge: Badge, t: float) -> None:
+    bx = center.x() + _BADGE_POS_OFFSET.x()
+    by = center.y() + _BADGE_POS_OFFSET.y()
+    pos = QPointF(bx, by)
+
+    if badge == Badge.CRITICAL_BATTERY:
+        _draw_battery_icon(painter, pos, QColor("#E53935"), pulse_speed=6.0, t=t)
+    elif badge == Badge.LOW_BATTERY:
+        _draw_battery_icon(painter, pos, QColor("#FB8C00"), pulse_speed=1.6, t=t)
+    elif badge == Badge.CHARGING:
+        _draw_lightning_icon(painter, pos)
+    elif badge == Badge.HIGH_RESOURCE:
+        _draw_sweat_drop_icon(painter, pos, t)
+    elif badge == Badge.LOW_DISK:
+        _draw_disk_warning_icon(painter, pos)
+
+
+def _draw_battery_icon(
+    painter: QPainter, pos: QPointF, color: QColor, pulse_speed: float, t: float
+) -> None:
+    painter.save()
+    alpha = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(t * pulse_speed))
+    fill = QColor(color)
+    fill.setAlphaF(alpha)
+
+    body = QRectF(0, 0, 13.0, 8.0)
+    body.moveCenter(pos)
+    painter.setPen(_outline_pen(1.2))
+    painter.setBrush(fill)
+    painter.drawRoundedRect(body, 1.5, 1.5)
+
+    nub = QRectF(0, 0, 1.6, 3.6)
+    nub.moveCenter(QPointF(body.right() + 1.0, pos.y()))
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(fill)
+    painter.drawRect(nub)
+
+    inner = body.adjusted(2.0, 2.0, -6.0, -2.0)
+    painter.setBrush(color)
+    painter.drawRect(inner)
+    painter.restore()
+
+
+def _draw_lightning_icon(painter: QPainter, pos: QPointF) -> None:
+    painter.save()
+    painter.setPen(_outline_pen(1.0))
+    painter.setBrush(QColor("#FDD835"))
+    path = QPainterPath(QPointF(pos.x() - 1.5, pos.y() - 7.0))
+    path.lineTo(QPointF(pos.x() + 3.0, pos.y() - 7.0))
+    path.lineTo(QPointF(pos.x() - 1.0, pos.y() + 0.5))
+    path.lineTo(QPointF(pos.x() + 2.5, pos.y() + 0.5))
+    path.lineTo(QPointF(pos.x() - 3.0, pos.y() + 7.0))
+    path.lineTo(QPointF(pos.x() + 0.5, pos.y() - 0.5))
+    path.lineTo(QPointF(pos.x() - 2.5, pos.y() - 0.5))
+    path.closeSubpath()
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_sweat_drop_icon(painter: QPainter, pos: QPointF, t: float) -> None:
+    painter.save()
+    bob = 1.2 * math.sin(t * 3.0)
+    dx, dy = pos.x(), pos.y() + bob
+    size = 6.0
+
+    path = QPainterPath()
+    path.moveTo(dx, dy - size)
+    path.cubicTo(
+        QPointF(dx - size * 0.9, dy + size * 0.2),
+        QPointF(dx - size * 0.5, dy + size),
+        QPointF(dx, dy + size),
+    )
+    path.cubicTo(
+        QPointF(dx + size * 0.5, dy + size),
+        QPointF(dx + size * 0.9, dy + size * 0.2),
+        QPointF(dx, dy - size),
+    )
+    painter.setPen(_outline_pen(1.0))
+    painter.setBrush(QColor("#4FC3F7"))
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_disk_warning_icon(painter: QPainter, pos: QPointF) -> None:
+    painter.save()
+    disk_rect = QRectF(0, 0, 12.0, 12.0)
+    disk_rect.moveCenter(QPointF(pos.x() - 2.0, pos.y()))
+    painter.setPen(_outline_pen(1.1))
+    painter.setBrush(QColor("#B0BEC5"))
+    painter.drawEllipse(disk_rect)
+    hole_rect = QRectF(0, 0, 4.0, 4.0)
+    hole_rect.moveCenter(disk_rect.center())
+    painter.setBrush(WHITE)
+    painter.drawEllipse(hole_rect)
+
+    warn_center = QPointF(pos.x() + 6.0, pos.y() + 4.0)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor("#FFB300"))
+    tri = [
+        QPointF(warn_center.x(), warn_center.y() - 6.0),
+        QPointF(warn_center.x() - 5.2, warn_center.y() + 4.0),
+        QPointF(warn_center.x() + 5.2, warn_center.y() + 4.0),
+    ]
+    _draw_polygon(painter, tri)
+
+    font = QFont("Segoe UI", 6, QFont.Bold)
+    painter.setFont(font)
+    painter.setPen(_outline_pen(1.0))
+    painter.drawText(QPointF(warn_center.x() - 1.2, warn_center.y() + 2.2), "!")
+    painter.restore()
+
+
+# -- distraction nudge ----------------------------------------------------
+
+
+def _draw_nudge_wave(painter: QPainter, center: QPointF, t: float) -> None:
+    painter.save()
+    swing = math.sin(t * 8.0)
+    paw_x = center.x() + BODY_RX * 0.95
+    paw_y = center.y() + BODY_RY * 0.1 - 8.0 * max(0.0, swing)
+
+    pen = _outline_pen(1.6)
+    painter.setPen(pen)
+    painter.setBrush(BODY_HIGHLIGHT)
+    painter.drawEllipse(QPointF(paw_x, paw_y), 6.5, 6.5)
+    painter.restore()
+
+
+def _draw_speech_bubble(painter: QPainter, center: QPointF, text: str, opacity: float) -> None:
+    painter.save()
+    painter.setOpacity(max(0.0, min(1.0, opacity)))
+
+    font = QFont("Segoe UI", 9)
+    painter.setFont(font)
+    metrics = QFontMetricsF(font)
+    padding_x, padding_y = 8.0, 5.0
+    tw = metrics.horizontalAdvance(text)
+    th = metrics.height()
+
+    bubble = QRectF(0, 0, tw + padding_x * 2, th + padding_y * 2)
+    bubble.moveCenter(QPointF(center.x(), center.y() - BODY_RY * 1.9 - bubble.height() / 2))
+    # Keep the bubble from drifting past the drawing canvas at small sizes.
+    if bubble.left() < 2:
+        bubble.moveLeft(2)
+    if bubble.right() > CANVAS - 2:
+        bubble.moveRight(CANVAS - 2)
+
+    painter.setPen(_outline_pen(1.6))
+    painter.setBrush(WHITE)
+    painter.drawRoundedRect(bubble, 6.0, 6.0)
+
+    tail = QPainterPath(QPointF(center.x() - 4, bubble.bottom() - 1))
+    tail.lineTo(QPointF(center.x() + 4, bubble.bottom() - 1))
+    tail.lineTo(QPointF(center.x(), bubble.bottom() + 7))
+    tail.closeSubpath()
+    painter.drawPath(tail)
+
+    painter.setPen(OUTLINE_COLOR)
+    painter.drawText(bubble, Qt.AlignCenter, text)
+    painter.restore()

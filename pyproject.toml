@@ -1,0 +1,33 @@
+[project]
+name = "gitten"
+version = "0.1.0"
+description = "A cute pixel-style kitten that lives on your taskbar and reacts to git activity."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "PySide6>=6.7",
+    "watchdog>=4.0",
+    "psutil>=5.9",
+    "pywin32>=306; sys_platform == 'win32'",
+    "telethon>=1.36",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pyinstaller>=6.6",
+]
+
+[project.scripts]
+gitten = "gitten.main:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

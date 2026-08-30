@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+*.spec
+*.egg-info/
+
+# Telegram credentials/session must never live in the repo (see
+# GITTEN_V1_3_SPEC.md) -- they belong in ~/.gitten/, not here. This guards
+# against that directory ever being created inside the project by mistake.
+.gitten/
+*.session
+*.session-journal
