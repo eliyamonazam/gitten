@@ -26,7 +26,7 @@ from gitten.distraction import (
     load_distraction_lists,
 )
 from gitten.foreground_window import get_foreground_window
-from gitten.git_watcher import GitWatcher, count_commits_today
+from gitten.git_watcher import GitWatcher, count_commits_today, get_commit_streak
 from gitten.mood import Mood, MoodMachine
 from gitten.notifications import fetch_notifications, request_access
 from gitten.notifications import is_supported as notifications_supported
@@ -168,16 +168,19 @@ class GittenApp:
             commits_text = (
                 f"Commits today: {commits}" if commits is not None else "Commits today: --"
             )
+            streak = get_commit_streak(self.watcher.repo_path)
+            streak_text = f"Streak: {streak} day(s)" if streak is not None else "Streak: --"
             repo_text = f"Watching: {self.watcher.repo_path}"
         else:
             commits_text = "Commits today: --"
+            streak_text = "Streak: --"
             repo_text = "Watching: (no repo chosen)"
 
         battery = psutil.sensors_battery()
         battery_text = f"Battery: {battery.percent:.0f}%" if battery else "Battery: n/a"
         uptime_text = f"Running for: {self._format_uptime()}"
 
-        for text in (commits_text, battery_text, repo_text, uptime_text):
+        for text in (commits_text, streak_text, battery_text, repo_text, uptime_text):
             info_action = QAction(text)
             info_action.setEnabled(False)
             menu.addAction(info_action)
@@ -225,6 +228,7 @@ class GittenApp:
     def _on_commit(self) -> None:
         mood = self.mood_machine.on_commit(now=time.monotonic())
         self._apply_mood(mood)
+        self._apply_streak()
 
     def _on_dirty_changed(self, is_dirty: bool) -> None:
         mood = self.mood_machine.update_dirty(is_dirty, now=time.monotonic())
@@ -233,10 +237,15 @@ class GittenApp:
     def _on_tick(self) -> None:
         mood = self.mood_machine.tick(now=time.monotonic())
         self._apply_mood(mood)
+        self._apply_streak()
 
     def _apply_mood(self, mood: Mood) -> None:
         self.window.set_mood(mood)
         self.tray.setIcon(_make_icon(mood))
+
+    def _apply_streak(self) -> None:
+        streak = get_commit_streak(self.watcher.repo_path) if self.watcher.repo_path else 0
+        self.window.set_streak(streak if streak is not None else 0)
 
     def _on_system_tick(self) -> None:
         sample = sample_system()

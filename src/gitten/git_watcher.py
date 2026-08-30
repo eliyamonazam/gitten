@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import subprocess
 import time
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+
+from gitten.streak import compute_streak
 
 # Debounce rapid-fire filesystem events (git can touch a file several times
 # during a single operation) into a single status check.
@@ -82,6 +85,27 @@ def count_commits_today(repo_path: Path) -> int | None:
         return None
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     return len(lines)
+
+
+def get_commit_streak(repo_path: Path) -> int | None:
+    """Current consecutive-day commit streak in ``repo_path``, or None if it
+    can't be determined. Recomputed from `git log` each time -- same idiom as
+    `count_commits_today` -- rather than a running counter that could drift."""
+    try:
+        result = subprocess.run(
+            ["git", "log", "--format=%ad", "--date=short"],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    dates = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    return compute_streak(dates, date.today())
 
 
 class GitWatcher(QObject):

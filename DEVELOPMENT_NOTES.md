@@ -711,7 +711,77 @@ alert, random one-liners) but explicitly said not to start it yet, so it's
 committed as a plain doc with no accompanying code, same as how the other
 spec files were tracked before their features were built.
 
-## 12. Working agreement for this project
+## 12. v1.4 -- streaks, focus mode, combo alert, random one-liners
+
+Input is `GITTEN_V1_4_SPEC.md`, four independent features to be built one at
+a time, each tested and documented before moving to the next, and committed
+separately.
+
+### Feature 1: Daily commit streak
+
+**New pure module `src/gitten/streak.py`** -- same discipline as `mood.py`:
+one function, `compute_streak(commit_dates: Iterable[str], today: date) ->
+int`, zero Qt/subprocess imports. It dedupes the input into a `set` of
+`date` objects, then counts backward one day at a time starting from `today`
+if today already has a commit, or from `today - 1` if it doesn't (so the
+streak isn't considered broken just because it's still early in the day) --
+the first missing day stops the count. `today` is passed in by the caller
+(the same "inject the clock" idiom `mood.py` uses for `now`) rather than
+read internally, so it's fully unit-testable with fake dates.
+
+**`git_watcher.py`** gained `get_commit_streak(repo_path) -> int | None`,
+built the same way `count_commits_today` already was: `git log
+--format=%ad --date=short`, deduped into a set of date strings, fed into
+`compute_streak(dates, date.today())`. Recomputed from the full log every
+call rather than kept as a running counter, exactly as the spec asks (a
+running counter could silently drift if the app were closed for a day and
+reopened, or if commits were made outside Gitten's watch).
+
+**`sprite.py`** gained an optional `streak: int = 0` parameter on
+`paint_kitten` (default 0, so existing call sites are unaffected) and a new
+top-right icon slot (`_STREAK_POS_OFFSET`, mirroring the badge's top-left
+slot from v1.1 and deliberately placed away from the mood overlay which
+lives top-center/right) -- nothing below 3 days, a small grey star at 3-6, a
+bigger gold twinkling star at 7-29 (`_draw_star_icon`, a 5-point star path
+with a slow sine "twinkle" on its radius), and a small gold crown at 30+
+(`_draw_crown_icon`, a 7-point zigzag polygon: two flat bottom corners and a
+3-spike zigzag top, middle spike tallest).
+
+**`window.py`** gained `set_streak(streak: int)` (same no-op-if-unchanged
+pattern as `set_badge`) and threads `streak=self._streak` through to
+`paint_kitten` in `paintEvent`.
+
+**`main.py`**: `_apply_streak()` calls `get_commit_streak` (0 if no repo is
+watched) and pushes it to the window, called from both `_on_commit` (so the
+star/crown appears immediately after a commit that extends the streak) and
+the existing 5-second `_on_tick` (so it also stays correct as days roll over
+with no new git event to trigger it). The right-click stats menu
+(`_show_context_menu`) gained a `Streak: N day(s)` line right after "Commits
+today", using the same `get_commit_streak` call.
+
+**Testing**: `pytest -q` -> **71/71 passed** (62 pre-existing + 9 new
+`test_streak.py` tests: empty list, a single commit today, a single commit
+only yesterday, no commit in the last two days, a 3-day streak including
+today, a 3-day streak ending yesterday, a gap breaking the streak, duplicate
+same-day commits not inflating the count, and accepting a `set` as well as a
+`list`). Also verified end-to-end against a real scratch git repo (three
+commits on three consecutive days, backdated via `GIT_AUTHOR_DATE`/
+`GIT_COMMITTER_DATE`): `get_commit_streak` correctly returned `3` and
+`count_commits_today` returned `1`. Rendered all four streak tiers (`0`,
+`3`, `7`, `30`) through `paint_kitten` on an off-screen `QPixmap`
+(`QT_QPA_PLATFORM=offscreen`, with an explicit `QApplication` instance --
+without one, `QPixmap` construction crashes the interpreter outright rather
+than raising a catchable Python exception, a small gotcha worth remembering
+for any future off-screen render check in this environment) to confirm none
+of the new drawing paths throw.
+
+### Feature 2: Focus reaction while tests/builds run
+
+### Feature 3: Verify (and lightly enhance) the low-battery + uncommitted-changes combo
+
+### Feature 4: Random cute one-liners
+
+## 13. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was

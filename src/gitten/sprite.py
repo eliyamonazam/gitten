@@ -59,6 +59,7 @@ def paint_kitten(
     nudge_text: str | None = None,
     nudge_opacity: float = 0.0,
     turn_stage: int | None = None,
+    streak: int = 0,
 ) -> None:
     painter.save()
     painter.setRenderHint(QPainter.Antialiasing, True)
@@ -88,6 +89,9 @@ def paint_kitten(
 
     if badge is not None and badge != Badge.NONE:
         _draw_status_badge(painter, center, badge, t)
+
+    if streak >= 3:
+        _draw_streak_icon(painter, center, streak, t)
 
     if nudge_text and nudge_opacity > 0.0:
         _draw_nudge_wave(painter, center, t)
@@ -515,6 +519,62 @@ def _draw_disk_warning_icon(painter: QPainter, pos: QPointF) -> None:
     painter.setFont(font)
     painter.setPen(_outline_pen(1.0))
     painter.drawText(QPointF(warn_center.x() - 1.2, warn_center.y() + 2.2), "!")
+    painter.restore()
+
+
+# -- commit streak ---------------------------------------------------------
+# A small icon in the top-right corner (mirroring the badge's top-left spot,
+# and clear of the mood overlay which lives top-center/right) once the
+# streak reaches the spec's 3-day threshold. Nothing below that.
+
+_STREAK_POS_OFFSET = QPointF(BODY_RX * 0.85, -BODY_RY * 1.15)
+
+
+def _draw_streak_icon(painter: QPainter, center: QPointF, streak: int, t: float) -> None:
+    pos = QPointF(center.x() + _STREAK_POS_OFFSET.x(), center.y() + _STREAK_POS_OFFSET.y())
+    if streak >= 30:
+        _draw_crown_icon(painter, pos)
+    elif streak >= 7:
+        _draw_star_icon(painter, pos, radius=7.5, color=QColor("#FFD700"), t=t)
+    else:
+        _draw_star_icon(painter, pos, radius=5.0, color=QColor("#B0BEC5"), t=t)
+
+
+def _star_points(center: QPointF, outer_r: float, inner_r: float) -> list[QPointF]:
+    points = []
+    for i in range(10):
+        r = outer_r if i % 2 == 0 else inner_r
+        angle = math.pi / 2 + i * math.pi / 5
+        points.append(QPointF(center.x() + r * math.cos(angle), center.y() - r * math.sin(angle)))
+    return points
+
+
+def _draw_star_icon(painter: QPainter, pos: QPointF, radius: float, color: QColor, t: float) -> None:
+    painter.save()
+    twinkle = 0.85 + 0.15 * math.sin(t * 3.0)
+    painter.setPen(_outline_pen(1.0))
+    painter.setBrush(color)
+    _draw_polygon(painter, _star_points(pos, radius * twinkle, radius * 0.42))
+    painter.restore()
+
+
+def _draw_crown_icon(painter: QPainter, pos: QPointF) -> None:
+    painter.save()
+    w, h = 15.0, 9.0
+    base_y = pos.y() + h * 0.5
+    left_x = pos.x() - w / 2
+    points = [
+        QPointF(left_x, base_y),
+        QPointF(left_x, base_y - h),
+        QPointF(left_x + w * 0.25, base_y - h * 0.4),
+        QPointF(left_x + w * 0.5, base_y - h * 1.15),
+        QPointF(left_x + w * 0.75, base_y - h * 0.4),
+        QPointF(left_x + w, base_y - h),
+        QPointF(left_x + w, base_y),
+    ]
+    painter.setPen(_outline_pen(1.0))
+    painter.setBrush(QColor("#FFD700"))
+    _draw_polygon(painter, points)
     painter.restore()
 
 
