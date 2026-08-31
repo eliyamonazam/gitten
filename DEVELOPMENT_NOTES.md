@@ -2267,7 +2267,263 @@ than only adding new isolated tests).
 With this, v1.8's detection, pose, precedence decision, and all three
 suppression gates are implemented, tested, and documented.
 
-## 20. Working agreement for this project
+## 20. v1.9 -- quick command bar
+
+Input is `GITTEN_V1_9_SPEC.md`, a new text command bar summoned by a global
+hotkey: type `streak`, `commits`, `battery`, `rename <name>`, `chase`,
+`help`, or `quit` and get an immediate reply. Built in the exact order the
+spec lays out -- parsing, then handlers, then the popup, then the hotkey --
+testing each part on its own before wiring it into the next, the same
+discipline v1.7's four-part build already established. Every Qt-facing
+part (the popup, the handlers wired to a real app, and the global hotkey)
+was verified **live** this session, not just reasoned about off-screen --
+see Testing below for exactly what "live" meant for each part.
+
+### Part 1: `commands.py` -- parsing + reply formatting
+
+`parse_command(text: str) -> tuple[str, str]` is exactly what the spec
+describes: lowercase and trim the whole input, then split on the first
+whitespace into `(command, argument)`, with `argument` defaulting to `""`.
+Zero Qt/git/psutil imports, following the same pure-function discipline as
+every other `*.py` module with no I/O in this codebase (`mood.py`,
+`streak.py`, `distraction.py`, ...).
+
+**A deliberate, spec-driven tradeoff worth flagging explicitly**: because
+the spec says to lowercase the *whole* input before splitting, `rename Bob`
+parses to `("rename", "bob")` -- the argument gets lowercased too, so
+`rename` can currently only ever produce an all-lowercase cat name via the
+command bar (the tray's "Rename..." dialog is unaffected -- it never goes
+through `parse_command` at all). This was implemented literally as
+specced rather than special-cased, since the spec's wording was
+unambiguous; flagged here in case a future session is asked to make it
+case-preserving.
+
+The rest of `commands.py` is a set of small pure formatting functions --
+`format_streak_reply`, `format_commits_reply`, `format_battery_reply`,
+`format_rename_reply`, `format_chase_reply`, plus the `COMMANDS_HELP_TEXT`
+and `UNKNOWN_COMMAND_REPLY` constants -- that take already-gathered plain
+values (an `int | None`, a `float | None`, a name string) and return the
+exact reply text to show. This is the same split `notifications.py`
+already established for `format_notification`: keep the "what text to
+show" decision pure and testable, and leave the actual data-gathering
+(git log calls, a `psutil.sensors_battery()` read, cat-rename persistence,
+the mouse-chase trigger) as thin glue in `main.py`, the same place
+`_stats_menu_lines` already blends I/O with formatting for the right-click
+stats menu. This is also what the spec's "these handlers need access to
+already-existing app state... so they can't be fully Qt-free" note was
+pointing at -- the *decision* logic here is Qt-free and unit-tested; the
+*wiring* to real app state isn't, and is verified live instead (see
+Testing).
+
+**Testing**: new `tests/test_commands.py`, 21 tests -- `parse_command`
+(empty input, whitespace-only input, a bare command, trailing whitespace,
+a command with an argument, extra internal whitespace collapsing correctly,
+uppercase input lowercasing, and a multi-word argument staying joined) and
+every formatter (value vs. `None`/empty-argument cases, plus the help text
+mentioning every command name and the unknown-command reply mentioning
+`help`). `pytest -q` -> **167/167 passed** (146 pre-existing + 21 new).
+
+### Part 2: the command dispatch table
+
+Lives as a method on `GittenApp` (`_dispatch_command(command, argument) ->
+str | None`), per the spec's explicit "use your judgment... the same way
+you've made similar plumbing calls before" -- this mirrors where
+`_show_context_menu`/`_stats_menu_lines` already ended up: app-state-heavy
+glue lives on `GittenApp` itself rather than a separate stateless module,
+since it needs `self.watcher`, `self.window`, `self.settings`, and
+`self._is_chasing` directly. It returns the reply text (formatted via
+`commands.py`'s pure functions above) rather than calling
+`window.show_nudge` itself, so it stays a plain, directly-callable method a
+test can invoke and assert on without needing to also assert on the nudge
+bubble's internal state. `_on_command_submitted` (the popup's signal
+handler, wired in Part 3) is the only thing that actually calls
+`window.show_nudge(reply)`, and only when `reply is not None` -- `quit` is
+the one command that returns `None` and just calls `self.app.quit()`
+instead, per the spec.
+
+Each handler reuses an existing mechanism rather than duplicating it, per
+the spec's explicit instructions for `streak`/`commits`/`chase`, and
+extended to `rename` on the same principle:
+- `streak` / `commits` call `get_commit_streak` / `count_commits_today`
+  from `git_watcher.py` unchanged (the exact same functions the stats menu
+  already uses), passing `None` through when no repo is watched (mirroring
+  `_stats_menu_lines`' own "--" fallback).
+- `battery` reads `psutil.sensors_battery()` directly, the same call
+  `_stats_menu_lines` already makes.
+- `rename <name>` required pulling the tray dialog's rename effect out into
+  a new shared `_apply_rename(name: str)` method (settings persist +
+  tooltip refresh) so `_prompt_rename` (the dialog) and the new command
+  handler both call the same code instead of the command handler
+  reimplementing it -- the same "extract the shared effect" pattern this
+  session applied that the spec only asked for explicitly on `chase`.
+- `chase` calls the existing `_start_mouse_chase()` directly, bypassing the
+  random spawn timer entirely, exactly as specced. One small addition
+  beyond the spec's letter: if a chase is already in progress,
+  `_dispatch_command` doesn't start a second one on top of it (which would
+  silently retarget the in-flight `walk_to` and leave two mouse-window
+  states confused) -- it replies "already on the hunt!" instead, via
+  `format_chase_reply(already_chasing=True)`.
+- `help` returns the static `COMMANDS_HELP_TEXT`; `quit` calls `self.app.
+  quit()`; anything else (including the empty-string command from empty
+  input) falls through to `UNKNOWN_COMMAND_REPLY`, satisfying the spec's
+  "never silently do nothing" for unrecognized input.
+
+**Testing**: no pytest file for this part, matching this codebase's
+existing convention that a full `GittenApp` is exercised live/headlessly
+rather than unit-tested in isolation (no `test_main.py` has ever existed;
+see the v1.2/v1.6/v1.7/v1.8 dev notes for the same pattern). Instead, a
+scratch script instantiated a real `GittenApp` (`QT_QPA_PLATFORM=
+offscreen`) pointed at a real scratch git repo (one real commit, made
+today) and called `_dispatch_command` directly for every command,
+confirming against real data: `streak` → `"Streak: 1 day(s)"`, `commits` →
+`"Commits today: 1"`, `battery` → a real `"Battery: 78%"` reading from this
+machine, `rename bob` → `app.cat_name` actually became `"bob"` and the
+reply confirmed it, a second bare `rename` with no argument left the name
+unchanged and replied with the usage hint, `chase` actually set
+`_is_chasing = True` and made the real `mouse_window` visible, a second
+immediate `chase` call while still chasing did *not* start a second one and
+replied `"already on the hunt!"`, `help` listed every command name, both
+`asdf` and empty input produced the unknown-command reply, and `quit`
+(with `app.app.quit` swapped for a spy) called it exactly once and returned
+`None`.
+
+### Part 3: `command_bar_window.py` -- the popup
+
+A `QWidget` subclass carrying one `QLineEdit`, reusing `KittenWindow`/
+`MouseWindow`'s proven `FramelessWindowHint | WindowStaysOnTopHint | Tool`
++ `WA_TranslucentBackground` combination -- but **deliberately dropping**
+`Qt.WindowDoesNotAcceptFocus` and `Qt.WA_ShowWithoutActivating`, the two
+flags that make the *other* two windows never steal keyboard focus. This
+window is the opposite case: it's a real text box, so it has to actually
+receive focus to be usable, and it has to be able to detect *losing* focus
+(a real `QEvent.FocusOut` on the line edit) to implement "clicking
+elsewhere closes it." Escape is caught via an event filter installed on the
+`QLineEdit` itself (checking for `QEvent.Type.KeyPress` +
+`Qt.Key_Escape`) rather than overriding `keyPressEvent` on the window,
+since the line edit is what actually holds focus and receives the key
+event first.
+
+The window doesn't parse or dispatch anything itself -- `command_submitted
+(str)` just emits the raw typed text on Enter, after already hiding itself.
+`main.py`'s `_on_command_submitted` is what calls `parse_command` +
+`_dispatch_command`. This keeps the popup fully self-contained, per the
+spec: it never touches `KittenWindow`'s `view_mode`/click-handling state
+machine, the same "separate popup, not a mode of the existing window"
+split `mouse_window.py` already established for the chase minigame's mouse
+sprite.
+
+`GittenApp._show_command_bar()` (the hotkey's callback, added in Part 4 but
+tested here too) positions the bar just above the cat's current position,
+horizontally centered on it, clamped into the primary screen's available
+geometry via the same `available_geometry()` v1.7's mouse-spawn logic
+already uses -- no new screen-geometry code.
+
+**Testing -- live, not off-screen, per the spec's explicit instruction**:
+a standalone script ran a real (non-offscreen) `QApplication` and used
+`QTest.keyClicks`/`QTest.keyClick` (real synthetic Qt keyboard events
+delivered through the real event system, not mocked signal calls) against
+a real, shown `CommandBarWindow`:
+- Typing `"streak"` then `Qt.Key_Return` fired `command_submitted` with
+  exactly `"streak"` and left the bar hidden afterward.
+- Typing `"commits"` then `Qt.Key_Escape` fired nothing and left the bar
+  hidden -- confirming Escape genuinely discards instead of submitting.
+- Showing the bar, then calling `setFocus` on a `QLineEdit` inside a
+  second, separate real window (with `QTest.qWaitForWindowActive` given
+  time to let the window manager actually switch active-window state)
+  closed the bar with nothing emitted -- confirming real OS-level focus
+  loss, not just an internal flag, triggers the close.
+
+Then the full wiring was exercised against a real, fully-wired `GittenApp`
+(real scratch repo again): called `_show_command_bar()` directly (Part 4's
+hotkey wasn't built yet at this point in the build order), confirmed the
+bar appeared near the cat's real on-screen position, typed `"streak"` via
+`QTest` and pressed Enter, and confirmed the *real* nudge bubble
+(`window._nudge_text`) ended up holding the real reply
+(`"Streak: 1 day(s)"`) -- the whole popup-to-reply path running for real,
+nothing mocked.
+
+### Part 4: the global hotkey (`command_bar_hotkey.py`)
+
+Registers Ctrl+Alt+G via the raw `user32.RegisterHotKey` Win32 API through
+`ctypes` -- consistent with `system_idle.py`'s existing raw-ctypes style
+for a win32 call `pywin32` doesn't expose, and per the spec's explicit "no
+new third-party hotkey library" instruction. `RegisterHotKey` binds the
+combination to a specific window handle's message queue; a
+`QAbstractNativeEventFilter` subclass (`_HotkeyEventFilter`) is what
+actually catches the resulting `WM_HOTKEY` message, since Qt calls every
+installed native event filter for every native message it pumps through
+the app's own event loop on that thread -- no second message loop, no
+polling.
+
+`register_global_hotkey(hwnd, callback)` **checks `RegisterHotKey`'s
+return value and returns `None` on failure** (logging why -- e.g. another
+app already owns Ctrl+Alt+G) rather than crashing or raising, exactly the
+"check the return value, degrade gracefully" discipline the spec asked
+for and every other win32-touching module in this codebase (`system_idle.
+py`, `foreground_window.py`, `notifications.py`) already follows. `main.
+py`'s `_register_command_bar_hotkey()` only calls `app.
+installNativeEventFilter(...)` when registration actually succeeded, so a
+failed registration leaves the rest of the app completely unaffected --
+the command bar just becomes hotkey-less for that session (there's no
+other way to summon it yet, since there's no tray-menu entry for it in
+this spec -- worth adding in a future session as a fallback for exactly
+this failure case). The hotkey is unregistered via `app.aboutToQuit`,
+matching the pattern `git_watcher.py`'s `stop()` already sets for cleaning
+up a live OS-level resource on shutdown.
+
+The hardcoded `Ctrl+Alt+G` combination is called out with a `TODO` comment
+in `command_bar_hotkey.py` pointing at "make this configurable once a
+settings UI exists," per the spec's explicit instruction, since there's no
+settings panel yet.
+
+**Testing -- live, with a REAL simulated physical key press, per the
+spec's explicit instruction not to trust an off-screen assumption**:
+`RegisterHotKey`/`WM_HOTKEY` is a genuine OS-level, system-wide mechanism
+that can't be exercised through Qt's own synthetic event system at all
+(Qt's `QTest.keyClick` only ever delivers events to a specific widget, it
+never goes through the real Windows message queue) -- so the only way to
+actually prove this works is a real simulated hardware-level key press.
+A standalone script called `user32.keybd_event` directly (`VK_CONTROL`,
+`VK_MENU`, `VK_G` down, then up in reverse order -- wrapped in a
+`try/finally` that always releases all three keys, so a failed assertion
+mid-test can never leave Ctrl/Alt "stuck down" system-wide) against a real
+registered hotkey and confirmed the callback actually fired. Also
+confirmed: `unregister_global_hotkey` genuinely releases the combination
+(a fresh `register_global_hotkey` call for the same hwnd succeeded cleanly
+afterward, proving the first registration wasn't a no-op to begin with),
+and registering the same combination on a second, different window handle
+while the first still held it returned `None` instead of crashing (Windows
+error 1409, `ERROR_HOTKEY_ALREADY_REGISTERED`, confirming the "another app
+already owns it" failure path is real and correctly handled, not just
+theoretical).
+
+**Then the full v1.9 chain end to end, live, with nothing mocked
+anywhere**: a real, fully-wired `GittenApp` (real scratch repo, real
+window shown on screen), a real Ctrl+Alt+G physical key simulation via
+`keybd_event` (not a Qt synthetic event -- this exercises the actual
+registered OS hotkey path, proving `main.py`'s wiring and not just the
+standalone module), confirmed the real command bar (`app.command_bar`)
+actually became visible as a direct result, then typed `"commits"` via
+`QTest.keyClicks` and pressed Enter, and confirmed the real nudge bubble
+ended up holding the real reply (`"Commits today: 1"`, matching the one
+real commit in the scratch repo) -- the entire hotkey → popup → parse →
+dispatch → git-log-call → reply-bubble chain, run for real, once, start to
+finish.
+
+`pytest -q` re-run after all four parts -> unchanged at **167/167 passed**
+(Parts 2-4 added no new pure-logic module, only Part 1 did). `tasklist`
+was checked after every live script and confirmed no stray `python.exe`
+processes were left running, avoiding a repeat of the v1's zombie-process
+lesson (these scripts never call `app.exec()`, so the process exits
+cleanly on its own once the script finishes).
+
+With this, all four parts of v1.9 are implemented, tested (unit tests for
+the pure `commands.py` logic; live, real-event/real-OS-API testing for the
+dispatch wiring, the popup, and the global hotkey, per the spec's explicit
+instruction not to trust an off-screen assumption for any of them), and
+documented in the order they were actually built.
+
+## 21. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was

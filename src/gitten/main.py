@@ -22,6 +22,18 @@ import psutil
 
 from gitten.app_launch import DEFAULT_COOLDOWN_SECONDS, should_react_to_new_launch
 from gitten.attention import AttentionState, AttentionTracker, turn_stage
+from gitten.command_bar_hotkey import register_global_hotkey, unregister_global_hotkey
+from gitten.command_bar_window import COMMAND_BAR_HEIGHT, COMMAND_BAR_WIDTH, CommandBarWindow
+from gitten.commands import (
+    COMMANDS_HELP_TEXT,
+    UNKNOWN_COMMAND_REPLY,
+    format_battery_reply,
+    format_chase_reply,
+    format_commits_reply,
+    format_rename_reply,
+    format_streak_reply,
+    parse_command,
+)
 from gitten.distraction import (
     DEFAULT_CONFIG_PATH,
     DistractionTracker,
@@ -55,6 +67,7 @@ from gitten.visible_windows import get_visible_window_pids
 from gitten.window import (
     INBOX_ACCESS_NOT_GRANTED,
     INBOX_UNAVAILABLE,
+    WINDOW_SIZE,
     KittenWindow,
     available_geometry,
 )
@@ -156,6 +169,8 @@ class GittenApp:
         self.window.plain_clicked.connect(self._on_plain_click)
         self.window.walk_cancelled.connect(self._on_walk_cancelled)
         self.mouse_window = MouseWindow()
+        self.command_bar = CommandBarWindow()
+        self.command_bar.command_submitted.connect(self._on_command_submitted)
         self._session_start = time.monotonic()
 
         self._build_tray()
@@ -195,7 +210,27 @@ class GittenApp:
         self._mouse_spawn_timer.timeout.connect(self._on_mouse_spawn_timer)
         self._schedule_next_mouse_spawn()
 
+        self._register_command_bar_hotkey()
+
         self.window.show()
+
+    def _register_command_bar_hotkey(self) -> None:
+        """v1.9 Part 4: Ctrl+Alt+G, system-wide, summons the command bar
+        from anywhere. Bound to the kitten window's own HWND -- it already
+        exists and doesn't need to be visible or focused for RegisterHotKey
+        to work. Degrades gracefully (logged, no crash) if the combination
+        is already claimed by something else -- see
+        `command_bar_hotkey.register_global_hotkey`."""
+        self._hotkey_filter = register_global_hotkey(
+            int(self.window.winId()), self._show_command_bar
+        )
+        if self._hotkey_filter is not None:
+            self.app.installNativeEventFilter(self._hotkey_filter)
+        self.app.aboutToQuit.connect(self._unregister_command_bar_hotkey)
+
+    def _unregister_command_bar_hotkey(self) -> None:
+        if self._hotkey_filter is not None:
+            unregister_global_hotkey(int(self.window.winId()))
 
     def _restore_position(self) -> None:
         pos = self.settings.value("window/pos")
@@ -256,9 +291,16 @@ class GittenApp:
     def _prompt_rename(self) -> None:
         name, ok = QInputDialog.getText(None, "Gitten", "Cat's name:", text=self.cat_name)
         if ok and name.strip():
-            self.cat_name = name.strip()
-            self.settings.setValue("cat/name", self.cat_name)
-            self._update_tray_tooltip()
+            self._apply_rename(name.strip())
+
+    def _apply_rename(self, name: str) -> None:
+        """The actual rename effect, shared by the tray's "Rename..." dialog
+        and v1.9's `rename <name>` command-bar command -- pulled out so
+        neither one duplicates the settings-persist + tooltip-refresh
+        logic."""
+        self.cat_name = name
+        self.settings.setValue("cat/name", self.cat_name)
+        self._update_tray_tooltip()
 
     def _prompt_set_birthday(self) -> None:
         # QInputDialog has no date-entry convenience method in this Qt
@@ -564,6 +606,68 @@ class GittenApp:
             self.mouse_window.hide()
             self._is_chasing = False
             self._chase_start_pos = None
+
+    # -- v1.9: quick command bar ------------------------------------------
+
+    def _show_command_bar(self) -> None:
+        """Summoned by the global hotkey (registered in `run()`) -- shows
+        the command bar just above the cat's current position, clamped to
+        stay fully on the primary screen's available geometry the same way
+        v1.7's mouse-spawn point picking already clamps to it."""
+        cat_pos = self.window.pos()
+        geo = available_geometry()
+        x = cat_pos.x() + (WINDOW_SIZE - COMMAND_BAR_WIDTH) // 2
+        y = cat_pos.y() - COMMAND_BAR_HEIGHT - 8
+        x = max(geo.left(), min(x, geo.right() - COMMAND_BAR_WIDTH))
+        y = max(geo.top(), y)
+        self.command_bar.show_near(x, y)
+
+    def _on_command_submitted(self, text: str) -> None:
+        """The command-bar popup emits the raw typed text on Enter -- this
+        parses it and runs the matching handler, then (for every command but
+        `quit`) shows the reply through the existing nudge/one-liner bubble
+        mechanism, reusing it exactly the way v1.8's welcome-back message
+        did rather than adding any new response-rendering."""
+        command, argument = parse_command(text)
+        reply = self._dispatch_command(command, argument)
+        if reply is not None:
+            self.window.show_nudge(reply)
+
+    def _dispatch_command(self, command: str, argument: str) -> str | None:
+        """Runs one command-bar command and returns the reply text to show,
+        or None only for `quit` (which just exits instead of replying).
+        Each handler reuses the existing mechanism it corresponds to --
+        streak/commits reuse `git_watcher.py`, rename reuses `_apply_rename`
+        (shared with the tray dialog), chase reuses the v1.7 mouse-chase
+        machinery -- rather than duplicating any of that logic here."""
+        if command == "streak":
+            streak = (
+                get_commit_streak(self.watcher.repo_path) if self.watcher.repo_path else None
+            )
+            return format_streak_reply(streak)
+        if command == "commits":
+            commits = (
+                count_commits_today(self.watcher.repo_path) if self.watcher.repo_path else None
+            )
+            return format_commits_reply(commits)
+        if command == "battery":
+            battery = psutil.sensors_battery()
+            return format_battery_reply(battery.percent if battery else None)
+        if command == "rename":
+            if argument:
+                self._apply_rename(argument)
+            return format_rename_reply(argument)
+        if command == "chase":
+            already_chasing = self._is_chasing
+            if not already_chasing:
+                self._start_mouse_chase()
+            return format_chase_reply(already_chasing=already_chasing)
+        if command == "help":
+            return COMMANDS_HELP_TEXT
+        if command == "quit":
+            self.app.quit()
+            return None
+        return UNKNOWN_COMMAND_REPLY
 
     def run(self) -> int:
         return self.app.exec()
