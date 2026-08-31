@@ -26,6 +26,7 @@ from gitten.command_bar_hotkey import register_global_hotkey, unregister_global_
 from gitten.command_bar_window import COMMAND_BAR_HEIGHT, COMMAND_BAR_WIDTH, CommandBarWindow
 from gitten.commands import (
     COMMANDS_HELP_TEXT,
+    SETTINGS_OPENED_REPLY,
     UNKNOWN_COMMAND_REPLY,
     format_battery_reply,
     format_chase_reply,
@@ -39,8 +40,10 @@ from gitten.distraction import (
     DistractionTracker,
     is_distracting_window,
     load_distraction_lists,
+    load_distraction_threshold_seconds,
+    save_distraction_config,
 )
-from gitten.focus import DEFAULT_FOCUS_CONFIG_PATH, load_focus_substrings
+from gitten.focus import DEFAULT_FOCUS_CONFIG_PATH, load_focus_substrings, save_focus_substrings
 from gitten.foreground_window import get_foreground_window
 from gitten.git_watcher import GitWatcher, count_commits_today, get_commit_streak
 from gitten.mood import Mood, MoodMachine
@@ -77,10 +80,12 @@ from gitten.reminders import (
     save_reminders,
 )
 from gitten.seasons import seasonal_accessory
+from gitten.settings_window import SettingsWindow
 from gitten.sprite import paint_kitten
 from gitten.status_badge import StatusBadgeTracker
 from gitten.system_idle import get_idle_seconds, is_away
 from gitten.system_monitor import is_focus_process_running, sample_system
+from gitten.telegram_lists import DEFAULT_TELEGRAM_LISTS_PATH, save_telegram_lists
 from gitten.visible_windows import get_visible_window_pids
 from gitten.window import (
     INBOX_ACCESS_NOT_GRANTED,
@@ -153,12 +158,22 @@ class GittenApp:
         self.birthday = date.fromisoformat(stored_birthday) if stored_birthday else None
         self.mood_machine = MoodMachine()
         self.badge_tracker = StatusBadgeTracker()
-        self.distraction_tracker = DistractionTracker()
         self.attention_tracker = AttentionTracker()
         self.distracting_titles, self.distracting_processes = load_distraction_lists(
             DEFAULT_CONFIG_PATH
         )
+        # v1.11: the nudge threshold now also lives in distraction_config.json
+        # (alongside the title/process lists), read at startup the same way
+        # they are -- previously this always used DistractionTracker's own
+        # hardcoded default with no load path at all.
+        self.distraction_tracker = DistractionTracker(
+            threshold_seconds=load_distraction_threshold_seconds(DEFAULT_CONFIG_PATH)
+        )
         self.focus_substrings = load_focus_substrings(DEFAULT_FOCUS_CONFIG_PATH)
+        # v1.11 settings panel: created lazily on first open and reused
+        # afterward (see _open_settings_panel), so re-opening it doesn't
+        # spawn duplicate windows.
+        self._settings_window: SettingsWindow | None = None
         # v1.6 curiosity reaction: an empty baseline until the first system
         # tick actually polls -- should_react_to_new_launch treats an empty
         # previous-PID set as "establish the baseline, don't react", so the
@@ -299,6 +314,11 @@ class GittenApp:
         menu.addAction(birthday_action)
 
         menu.addSeparator()
+        settings_action = QAction("Settings...", menu)
+        settings_action.triggered.connect(self._open_settings_panel)
+        menu.addAction(settings_action)
+
+        menu.addSeparator()
         quit_action = QAction("Quit Gitten", menu)
         quit_action.triggered.connect(self.app.quit)
         menu.addAction(quit_action)
@@ -337,15 +357,24 @@ class GittenApp:
         text, ok = QInputDialog.getText(
             None, "Gitten", "Cat's birthday (YYYY-MM-DD):", text=current
         )
-        if not ok or not text.strip():
-            return
+        if ok and text.strip():
+            self._apply_birthday(text.strip())
+
+    def _apply_birthday(self, text: str) -> bool:
+        """The actual birthday-set effect, shared by the tray's "Set my
+        birthday..." dialog and the v1.11 settings panel's General tab --
+        pulled out the same way `_apply_rename` already was for the name, so
+        neither call site duplicates the validate + persist logic. Returns
+        False (after warning the user) on an invalid date rather than
+        silently doing nothing."""
         try:
-            parsed = date.fromisoformat(text.strip())
+            parsed = date.fromisoformat(text)
         except ValueError:
             QMessageBox.warning(None, "Gitten", f"'{text}' isn't a valid date (use YYYY-MM-DD).")
-            return
+            return False
         self.birthday = parsed
         self.settings.setValue("cat/birthday", self.birthday.isoformat())
+        return True
 
     def _on_tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.DoubleClick:
@@ -751,6 +780,9 @@ class GittenApp:
             return format_reminders_list(self.reminders, time.time())
         if command == "cancel":
             return self._handle_cancel_command(argument)
+        if command == "settings":
+            self._open_settings_panel()
+            return SETTINGS_OPENED_REPLY
         if command == "help":
             return COMMANDS_HELP_TEXT
         if command == "quit":
@@ -791,6 +823,55 @@ class GittenApp:
         self.reminders = [r for r in self.reminders if r.id != target_id]
         save_reminders(self.reminders, DEFAULT_REMINDERS_PATH)
         return format_cancel_reply(match)
+
+    # -- v1.11: settings panel ---------------------------------------------
+
+    def _open_settings_panel(self) -> None:
+        """Both the tray's "Settings..." action and the command bar's
+        `settings` command call this -- a single lazily-created
+        `SettingsWindow` is reused across opens (rather than spawning a new
+        one each time), and its `showEvent` refreshes every field to the
+        app's current live state on every show."""
+        if self._settings_window is None:
+            self._settings_window = SettingsWindow(self)
+        self._settings_window.show()
+        self._settings_window.raise_()
+        self._settings_window.activateWindow()
+
+    def _apply_distraction_config(
+        self, titles: list[str], processes: list[str], threshold_minutes: float
+    ) -> None:
+        """Called by the settings panel's Distraction tab Save button.
+        Persists to disk *and* pushes the change into the exact in-memory
+        state `_on_distraction_tick` actually reads (`self.distracting_titles`
+        / `self.distracting_processes`, both read fresh every tick, and a
+        freshly-constructed `distraction_tracker` for the new threshold) --
+        previously these were only ever loaded once at startup, so editing
+        the JSON file by hand had no effect on a running instance until it
+        was restarted."""
+        self.distracting_titles = titles
+        self.distracting_processes = processes
+        self.distraction_tracker = DistractionTracker(threshold_seconds=threshold_minutes * 60.0)
+        save_distraction_config(titles, processes, threshold_minutes, DEFAULT_CONFIG_PATH)
+
+    def _apply_focus_config(self, substrings: list[str]) -> None:
+        """Called by the settings panel's Focus tab Save button. Same
+        live-apply fix as `_apply_distraction_config`:
+        `self.focus_substrings` is read fresh by `_on_focus_tick` every
+        poll, so reassigning it here (not just writing the JSON file) is
+        what makes the change take effect immediately."""
+        self.focus_substrings = substrings
+        save_focus_substrings(substrings, DEFAULT_FOCUS_CONFIG_PATH)
+
+    def _apply_telegram_lists(self, favorites: list[str], bad: list[str]) -> None:
+        """Called by the settings panel's Telegram tab Save button. Unlike
+        the distraction/focus lists, there's no live in-memory state to push
+        this into yet -- `telegram_watcher.py` was never built (v1.3 only
+        shipped the standalone connection-test script, see
+        DEVELOPMENT_NOTES.md section 10/15), so nothing in the running app
+        currently reads `telegram_lists.json` back out. This just persists
+        it, ready for that connection to read once it exists."""
+        save_telegram_lists(favorites, bad, DEFAULT_TELEGRAM_LISTS_PATH)
 
     def run(self) -> int:
         return self.app.exec()

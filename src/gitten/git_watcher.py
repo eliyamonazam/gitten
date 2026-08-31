@@ -25,6 +25,16 @@ from gitten.streak import compute_streak
 _DEBOUNCE_SECONDS = 0.3
 
 
+def is_git_repo(path: str | Path) -> bool:
+    """Whether `path` looks like a git repository (has a `.git` directory).
+    Pulled out of `GitWatcher.set_repo` as its own small function so the
+    exact same check -- the one already run at first-run and whenever the
+    tray's "Choose watched repo..." dialog accepts a folder -- can be
+    reused anywhere else a repo path needs validating (e.g. the v1.11
+    settings panel's General tab) without duplicating it."""
+    return (Path(path) / ".git").is_dir()
+
+
 class _GitDirHandler(FileSystemEventHandler):
     def __init__(self, on_commit_msg_changed, on_index_changed):
         super().__init__()
@@ -132,8 +142,7 @@ class GitWatcher(QObject):
     def set_repo(self, repo_path: str | Path) -> bool:
         """Start watching a new repo path. Returns False if it isn't a git repo."""
         repo_path = Path(repo_path)
-        git_dir = repo_path / ".git"
-        if not git_dir.is_dir():
+        if not is_git_repo(repo_path):
             return False
 
         self.stop()
@@ -144,7 +153,7 @@ class GitWatcher(QObject):
             on_index_changed=self._handle_index_change,
         )
         self._observer = Observer()
-        self._observer.schedule(handler, str(git_dir), recursive=False)
+        self._observer.schedule(handler, str(repo_path / ".git"), recursive=False)
         self._observer.start()
 
         # Establish the initial dirty state right away.

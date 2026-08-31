@@ -13,9 +13,10 @@ from __future__ import annotations
 
 COMMANDS_HELP_TEXT = (
     "commands: streak, commits, battery, rename <name>, chase, "
-    "remind <duration> <message>, reminders, cancel <id>, help, quit"
+    "remind <duration> <message>, reminders, cancel <id>, settings, help, quit"
 )
 UNKNOWN_COMMAND_REPLY = "didn't understand that, try `help`"
+SETTINGS_OPENED_REPLY = "opening settings..."
 
 
 def parse_command(text: str) -> tuple[str, str]:

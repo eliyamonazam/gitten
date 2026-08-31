@@ -4,6 +4,7 @@ from gitten.focus import (
     DEFAULT_FOCUS_SUBSTRINGS,
     load_focus_substrings,
     matches_focus_process,
+    save_focus_substrings,
 )
 
 
@@ -61,3 +62,18 @@ def test_load_invalid_json_falls_back_to_defaults(tmp_path):
     config = tmp_path / "focus_config.json"
     config.write_text("not valid json", encoding="utf-8")
     assert load_focus_substrings(config) == DEFAULT_FOCUS_SUBSTRINGS
+
+
+# -- save_focus_substrings ----------------------------------------------------
+
+
+def test_save_then_load_round_trips(tmp_path):
+    config = tmp_path / "focus_config.json"
+    save_focus_substrings(["make check", "tox"], config)
+    assert load_focus_substrings(config) == ["make check", "tox"]
+
+
+def test_save_creates_parent_directory(tmp_path):
+    config = tmp_path / "a" / "b" / "focus_config.json"
+    save_focus_substrings(["pytest"], config)
+    assert config.exists()

@@ -47,3 +47,13 @@ def load_focus_substrings(path: Path = DEFAULT_FOCUS_CONFIG_PATH) -> list[str]:
         return [str(s) for s in data.get("substrings", DEFAULT_FOCUS_SUBSTRINGS)]
     except (OSError, ValueError, AttributeError):
         return list(DEFAULT_FOCUS_SUBSTRINGS)
+
+
+def save_focus_substrings(
+    substrings: list[str], path: Path = DEFAULT_FOCUS_CONFIG_PATH
+) -> None:
+    """Persist the user-editable substring list to the same JSON file
+    `load_focus_substrings` reads back from. Used by the v1.11 settings
+    panel's Focus tab."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"substrings": list(substrings)}), encoding="utf-8")

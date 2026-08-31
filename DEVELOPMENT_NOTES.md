@@ -3048,3 +3048,257 @@ clean after every live run.
 built, why, and how it was tested — not just left implicit in the diff or
 in a chat summary. This file is the durable record; treat updating it as
 part of finishing the task, not an optional follow-up.
+
+## 24. v1.11 -- the settings panel, and fixing several "load once at startup" bugs
+
+Input is `GITTEN_V1_11_SPEC.md`. This round consolidates the configuration
+that already existed -- scattered across three `~/.gitten/*.json` files and
+a couple of tray dialogs -- into one real window, per the spec's explicit
+scoping: **no new configurability was invented** (badge thresholds,
+sulking/away timing, the hotkey combo, and spawn intervals all stay exactly
+as hardcoded as they were before this session), and every tab's Save reuses
+an existing apply/persist mechanism rather than writing a parallel one.
+
+### Architecturally the first normal window in this app
+
+Every prior window (`KittenWindow`, `MouseWindow`, `CommandBarWindow`) uses
+`Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool` +
+`Qt.WA_TranslucentBackground`, because each is an overlay-style pet/game/
+popup widget. The new `src/gitten/settings_window.py` deliberately does none
+of that: `SettingsWindow(QDialog)` sets only `Qt.Window` and never touches
+`WA_TranslucentBackground` or `WindowStaysOnTopHint` -- a normal title bar,
+normal minimize/close, not always-on-top, not click-through, exactly per the
+spec's explicit "don't copy the wrong precedent" instruction. Verified this
+concretely rather than just trusting the code: a live script asserted
+`windowFlags() & Qt.WindowStaysOnTopHint` and `& Qt.FramelessWindowHint` are
+both false and `testAttribute(Qt.WA_TranslucentBackground)` is false on the
+real, shown window (see Testing).
+
+Five tabs (`QTabWidget`): General, Distraction, Focus, Telegram, Reminders.
+Each of the first four has its **own** Save button (not one dialog-wide
+Save) since each edits an independent config surface with its own
+persistence file -- committing one tab's list edits shouldn't require also
+committing whatever's mid-edit in another tab. The Reminders tab has no Save
+button at all: it's a live view with an immediate per-row Cancel action, not
+something staged and committed. A shared `_build_list_editor(initial_items)`
+helper (a `QListWidget` + Add.../Remove buttons, `QInputDialog.getText` for
+Add) is reused for every string-list surface -- distraction titles,
+distraction processes, the focus substring list, and both Telegram lists --
+rather than four near-identical copies.
+
+The panel is created lazily on first open (`GittenApp._open_settings_panel`,
+wired to both the tray's new "Settings..." action and the command bar's new
+`settings` command) and reused on subsequent opens rather than spawning a
+new window each time; `showEvent` refreshes every field to the app's actual
+current live state (repo path, cat name, birthday, and the Reminders tab if
+it's the active one) so reopening never shows stale data from a previous
+open or from a change made through some other path (e.g. a `rename` command
+typed into the command bar while the panel was closed).
+
+### General tab -- three fields, three different reuse shapes
+
+- **Repo path**: a read-only label + "Browse..." button that calls
+  `self._app._prompt_choose_repo(required=False)` directly -- the *exact*
+  existing method the tray's "Choose watched repo..." action already calls,
+  which already does the file dialog, the `is_git_repo` validation (see
+  below), the persist, and the tooltip refresh all together, live,
+  immediately. This field has no separate Save step at all, since the
+  existing method it reuses is already a single atomic live action.
+- **Cat's name** / **birthday**: `QLineEdit`s, applied on this tab's Save
+  button via `self._app._apply_rename(name)` (unchanged, already extracted
+  in v1.9) and a **new** `GittenApp._apply_birthday(text) -> bool`, pulled
+  out of `_prompt_set_birthday` the same way `_apply_rename` was pulled out
+  of `_prompt_rename` back in v1.9 -- `_prompt_set_birthday` itself is now
+  just "get text via QInputDialog, then call `_apply_birthday`". Both the
+  tray dialog and the settings panel now share the one validate+persist
+  path; an invalid date shows the same `QMessageBox.warning` either way.
+
+**`git_watcher.py` gained `is_git_repo(path) -> bool`**, pulled out of
+`GitWatcher.set_repo`'s inline `(repo_path / ".git").is_dir()` check into its
+own small function -- exactly the "keep it in a small testable function"
+instruction the spec calls out for repo-path validation, and it means
+`set_repo` and any future caller (this session had none besides the existing
+one, since the settings panel reuses `_prompt_choose_repo` rather than
+re-validating itself) share one definition of "looks like a git repo." New
+`tests/test_git_watcher.py` (this codebase's first test file for
+`git_watcher.py`, which had none before since the rest of the module is I/O
+this project has always verified live) covers a real `.git` directory, a
+missing one, a `.git` *file* (submodule/worktree style -- deliberately not
+treated as a match, matching the pre-existing behavior), a nonexistent path,
+and a string-typed path argument.
+
+### The part that mattered most: fixing "load once at startup, never again"
+
+Three config surfaces were checked, per the spec's explicit instruction, for
+whether they were only ever loaded once into in-memory state at `GittenApp.
+__init__` and never re-read -- confirmed true for all three before writing
+any fix:
+
+- **Distraction lists**: `self.distracting_titles` / `self.distracting_processes`
+  were loaded once via `load_distraction_lists` and never touched again;
+  `_on_distraction_tick` reads them fresh every ~3s poll (`self.
+  distracting_titles`, not a local copy), which turns out to make the fix
+  trivial once the settings panel reassigns them directly -- no reload
+  method needed, matching the spec's "or just reassign the attribute
+  directly from main.py" option.
+- **Distraction threshold**: a genuinely new gap, not just a stale-cache one
+  -- `DistractionTracker` was always constructed with its hardcoded
+  `DEFAULT_THRESHOLD_SECONDS` default; `load_distraction_lists` never even
+  read a threshold key from `distraction_config.json` in the first place, so
+  this wasn't configurable via hand-editing the JSON file either, despite
+  the spec describing it as already living there. Added
+  `load_distraction_threshold_seconds` (reads a new `threshold_minutes` key,
+  same file, same fallback-to-default discipline) and
+  `save_distraction_config(titles, processes, threshold_minutes, path)`
+  (writes all three keys together) to `distraction.py`. `GittenApp.__init__`
+  now constructs `self.distraction_tracker` *after* loading this value
+  (previously it was constructed with no arguments before the lists were
+  even loaded) rather than leaving it permanently stuck on the hardcoded
+  default.
+- **Focus substrings**: same shape as distraction titles/processes --
+  `self.focus_substrings` is already read fresh every ~5s poll by
+  `_on_focus_tick`, so reassigning it live is enough. Added
+  `save_focus_substrings(substrings, path)` to `focus.py`.
+
+**`GittenApp` gained three new `_apply_*` methods** (`_apply_distraction_config`,
+`_apply_focus_config`, `_apply_telegram_lists`), each called from the
+matching tab's Save button and each responsible for *both* halves of "Save"
+per the spec's explicit instruction -- persist to disk **and** push into the
+live in-memory state the running app actually reads -- rather than the
+settings panel doing either half itself: `_apply_distraction_config` reassigns
+`self.distracting_titles`/`self.distracting_processes` and replaces
+`self.distraction_tracker` with a freshly-constructed one at the new
+threshold (simplest correct way to change a running tracker's threshold
+without hand-patching its internal `_next_fire_elapsed` watermark -- accepted
+tradeoff: this does reset any distraction streak already in progress, judged
+reasonable for a settings change); `_apply_focus_config` reassigns
+`self.focus_substrings`; `_apply_telegram_lists` only persists (see below).
+
+**Live-apply was verified live, not just reasoned about**, per the spec's
+explicit instruction: a real `GittenApp` had its distraction titles/processes
+list-widgets edited and Saved through the real `SettingsWindow`, then
+`is_distracting_window` was called directly against the app's *own*
+post-save `self.distracting_titles`/`self.distracting_processes` attributes
+-- confirmed the new process (`game.exe`) now matches and the old one
+(`discord.exe`) no longer does, with no restart anywhere in between. Same
+live check for focus: after Saving a custom `["make check"]` substring list,
+a real `python.exe` subprocess was launched and `is_focus_process_running
+(app.focus_substrings)` correctly returned `False` against it (it doesn't
+match "make check"), proving the *new* list is what's actually being
+checked, not a stale default. See Testing below for the full script.
+
+### Telegram tab -- a real gap between the spec's assumption and the codebase
+
+The spec describes the Telegram tab as editing "the favorites/bad-sender
+lists (`~/.gitten/telegram_lists.json`)" as if a load path for that file
+already existed. It didn't: v1.3 (section 10) only ever built the standalone
+connection-test script and `telegram_config.py` (the api_id/api_hash cache)
+-- `telegram_watcher.py` and the actual favorite/bad-sender matching logic
+described in `GITTEN_V1_3_SPEC.md` were never built, confirmed again by
+`grep`ing this codebase for `telegram_lists`/`favorites` before writing
+anything (matches section 15's "Roadmap rewritten accurately" finding from
+two housekeeping rounds ago, still true). This isn't new configurability
+being invented, though -- the JSON shape itself was already fully specified
+by `GITTEN_V1_3_SPEC.md`, just never given a load/save path -- so building
+that path is squarely what this tab is supposed to do, not scope creep.
+
+**New `src/gitten/telegram_lists.py`**, same shape as `telegram_config.py`
+and `distraction.py`'s list loader: `load_telegram_lists(path) -> (favorites,
+bad)` (falls back to `([], [])`, since there's no shipped default sender
+list the way there is for distraction/focus) and `save_telegram_lists
+(favorites, bad, path)`. `GittenApp._apply_telegram_lists` only persists --
+there's deliberately no live in-memory state to push this into, since
+nothing in the running app reads `telegram_lists.json` back out yet. Once
+`telegram_watcher.py` is eventually built, it should read via
+`load_telegram_lists` here rather than re-deriving the file location, per
+the same "one source of truth for where a config file lives" reasoning
+`telegram_config.py`'s own docstring already gives for the credential/
+session paths. The tab shows a short note explaining the connection itself
+is still pending, per the spec's explicit instruction.
+
+### Reminders tab -- view + cancel, reusing the exact existing path
+
+Lists pending reminders (sorted soonest-due, same order `format_reminders_list`
+already uses for the command-bar `reminders` reply) with a per-row Cancel
+button. Clicking Cancel calls `self._app._handle_cancel_command(str(reminder_id))`
+directly -- the exact same method the `cancel <id>` command-bar command
+already calls, not a reimplementation -- then re-renders the row list.
+Refreshed when the tab becomes visible (`QTabWidget.currentChanged`) and
+whenever the whole dialog is reopened via `showEvent`, per the spec's
+explicit allowance that a live-updating timer isn't needed here.
+
+### Command bar + tray wiring
+
+`commands.py` gained a `SETTINGS_OPENED_REPLY = "opening settings..."`
+constant and `settings` was added to `COMMANDS_HELP_TEXT`, alongside the
+existing eight. `GittenApp._dispatch_command` gained a `settings` branch
+(calls `_open_settings_panel()`, returns the constant) following the exact
+same shape every other handler already uses. The tray menu gained a
+"Settings..." action (`_build_tray`), placed in its own section between the
+rename/birthday actions and Quit.
+
+### Testing
+
+`pytest -q` -> **220/220 passed** (202 pre-existing + 18 new: 5
+`test_distraction.py` additions for `load_distraction_threshold_seconds`/
+`save_distraction_config`, 2 `test_focus.py` additions for
+`save_focus_substrings`, 5 new `tests/test_telegram_lists.py`, 5 new
+`tests/test_git_watcher.py`, and 1 `test_commands.py` addition for
+`SETTINGS_OPENED_REPLY` plus extending the existing help-text-mentions-
+every-command test to include `settings`). No new pure-logic module needed
+a dedicated test file for the Qt-glue parts (`settings_window.py` itself),
+matching this codebase's established pattern (no `test_main.py`,
+`test_command_bar_window.py`, etc. have ever existed either) -- verified
+live instead, per the spec's own explicit acknowledgment that "this round is
+UI-heavy... don't force artificial pure-logic modules."
+
+**Live, against a real (offscreen) `GittenApp` and a real scratch git
+repo** -- a scratch script drove the actual `SettingsWindow` instance
+end-to-end, nothing mocked: opened the panel (confirmed lazy-creation +
+reuse-on-reopen), edited and saved General (name/birthday applied via the
+shared methods, confirmed on `app.cat_name`/`app.birthday`; repo path
+applied live via a monkeypatched `QFileDialog.getExistingDirectory` pointed
+at a real `git init`-ed scratch repo, confirmed on `app.watcher.repo_path`),
+edited and saved Distraction (confirmed both the live in-memory attributes
+*and* the on-disk JSON, plus a real `is_distracting_window` call against the
+new lists), edited and saved Focus (confirmed live `app.focus_substrings`
+against a real running subprocess, plus on-disk JSON), edited and saved
+Telegram (confirmed on-disk JSON, no live consumer to check since none
+exists yet), set two real reminders via `_dispatch_command("remind", ...)`
+and cancelled one through the Reminders tab's Cancel button (confirmed
+`app.reminders` actually shrank by exactly the cancelled one), confirmed
+reopening the reused panel shows the just-applied name/repo rather than
+stale values, and confirmed the command bar's `settings` command opens the
+same panel instance. All ten checks passed.
+
+**Real screenshots, actually opened and inspected, not just internal-state
+assertions** -- per this codebase's established standard for any new Qt UI
+(the v1.9 command-bar backdrop bug and the v1.10/section-22 nudge-bubble
+clipping bug were both real rendering bugs that internal-state assertions
+alone had missed in earlier sessions). A live, non-offscreen `GittenApp` had
+its settings panel opened, `QScreen.grabWindow` captured the General,
+Distraction, and Reminders tabs (switching tabs via `QTest.qWait(300)`
+first, not just calling `setCurrentIndex` -- an earlier version of this
+script grabbed identical screenshots for every tab because Qt hadn't
+actually repainted yet without a processed event loop turn). All three PNGs
+were opened and visually inspected: General shows the watched-repo path,
+Browse button, name/birthday fields, and Save, with real window chrome (a
+title bar) unlike every other window in this app; Distraction shows both
+list widgets populated with the real defaults, Add/Remove buttons, the
+threshold spinbox at its correct default (20), and Save; Reminders shows two
+real pending reminders sorted by time-left with working per-row Cancel
+buttons. This also visually confirmed `windowFlags()`/`WA_TranslucentBackground`
+match what the live script already asserted programmatically -- an actual
+opaque white panel with a native title bar, not a transparent overlay.
+
+**A test-hygiene note worth recording**: this session's live scripts wrote
+real values into the actual `HKCU\Software\Gitten\Gitten` `QSettings` key
+(cat name, birthday, repo path) -- unlike `~/.gitten/*.json`, prior sessions'
+dev notes never mention scrubbing `QSettings` after a live test, but leaving
+a scratch-test repo path pointing at a since-deleted temp directory would
+have left the *real* app's next launch pointing at nothing. Reset
+`cat/name`, `cat/birthday`, and `repo/path` back to unset (first-run state)
+after both live scripts finished, via a small standalone `QSettings` cleanup
+call. All `~/.gitten/*.json` test artifacts were removed afterward and
+`tasklist` was checked clean after every live run, per this project's
+standing process-hygiene discipline.

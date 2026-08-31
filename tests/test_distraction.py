@@ -3,9 +3,12 @@ import json
 from gitten.distraction import (
     DEFAULT_DISTRACTING_PROCESSES,
     DEFAULT_DISTRACTING_TITLES,
+    DEFAULT_THRESHOLD_SECONDS,
     DistractionTracker,
     is_distracting_window,
     load_distraction_lists,
+    load_distraction_threshold_seconds,
+    save_distraction_config,
 )
 
 
@@ -109,3 +112,40 @@ def test_load_invalid_json_falls_back_to_defaults(tmp_path):
     titles, processes = load_distraction_lists(config)
     assert titles == DEFAULT_DISTRACTING_TITLES
     assert processes == DEFAULT_DISTRACTING_PROCESSES
+
+
+# -- load_distraction_threshold_seconds / save_distraction_config -----------
+
+
+def test_load_threshold_missing_file_returns_default(tmp_path):
+    assert load_distraction_threshold_seconds(tmp_path / "does_not_exist.json") == (
+        DEFAULT_THRESHOLD_SECONDS
+    )
+
+
+def test_load_threshold_invalid_json_returns_default(tmp_path):
+    config = tmp_path / "distraction_config.json"
+    config.write_text("not valid json", encoding="utf-8")
+    assert load_distraction_threshold_seconds(config) == DEFAULT_THRESHOLD_SECONDS
+
+
+def test_load_threshold_reads_minutes_key_as_seconds(tmp_path):
+    config = tmp_path / "distraction_config.json"
+    config.write_text(json.dumps({"threshold_minutes": 5}), encoding="utf-8")
+    assert load_distraction_threshold_seconds(config) == 300.0
+
+
+def test_save_distraction_config_round_trips(tmp_path):
+    config = tmp_path / "distraction_config.json"
+    save_distraction_config(["9gag"], ["steam.exe"], 15, config)
+
+    titles, processes = load_distraction_lists(config)
+    assert titles == ["9gag"]
+    assert processes == ["steam.exe"]
+    assert load_distraction_threshold_seconds(config) == 900.0
+
+
+def test_save_distraction_config_creates_parent_directory(tmp_path):
+    config = tmp_path / "a" / "b" / "distraction_config.json"
+    save_distraction_config([], [], 20, config)
+    assert config.exists()

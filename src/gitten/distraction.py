@@ -33,6 +33,7 @@ DEFAULT_DISTRACTING_PROCESSES = [
 ]
 
 DEFAULT_THRESHOLD_SECONDS = 20 * 60.0
+DEFAULT_THRESHOLD_MINUTES = DEFAULT_THRESHOLD_SECONDS / 60.0
 DEFAULT_CONFIG_PATH = Path.home() / ".gitten" / "distraction_config.json"
 
 
@@ -73,6 +74,40 @@ def load_distraction_lists(
         return titles, processes
     except (OSError, ValueError, AttributeError):
         return list(DEFAULT_DISTRACTING_TITLES), list(DEFAULT_DISTRACTING_PROCESSES)
+
+
+def load_distraction_threshold_seconds(path: Path = DEFAULT_CONFIG_PATH) -> float:
+    """Load the user-editable nudge threshold (stored in minutes, in the same
+    JSON file `load_distraction_lists` reads) and return it in seconds --
+    falling back to the shipped default if the file or key is missing/invalid,
+    same discipline as the lists loader above."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return float(data.get("threshold_minutes", DEFAULT_THRESHOLD_MINUTES)) * 60.0
+    except (OSError, ValueError, AttributeError):
+        return DEFAULT_THRESHOLD_SECONDS
+
+
+def save_distraction_config(
+    titles: list[str],
+    processes: list[str],
+    threshold_minutes: float,
+    path: Path = DEFAULT_CONFIG_PATH,
+) -> None:
+    """Persist the full distraction config -- titles, processes, and the
+    nudge threshold -- to the one JSON file both loaders above read back
+    from. Used by the v1.11 settings panel's Distraction tab."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "titles": list(titles),
+                "processes": list(processes),
+                "threshold_minutes": threshold_minutes,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 @dataclass
