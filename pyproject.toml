@@ -1,6 +1,6 @@
 [project]
 name = "gitten"
-version = "0.6.0"
+version = "0.13.0"
 description = "A cute pixel-style kitten that lives on your taskbar and reacts to git activity."
 readme = "README.md"
 requires-python = ">=3.11"

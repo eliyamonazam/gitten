@@ -3537,3 +3537,121 @@ session (confirmed via their real command line, not guessed) -- these are
 the user's own actual app instances, not anything spawned by this session's
 test scripts (which never invoke `-m gitten.main`), so they were left alone
 rather than killed.
+
+## 26. Housekeeping: README overhaul (post v1.6-v1.12) & version bump
+
+Input is `GITTEN_HOUSEKEEPING_2_BRIEF.md`. Same standard as the first
+README housekeeping round (section 15): `DEVELOPMENT_NOTES.md` was read in
+full before writing a word of the new README, not reconstructed from
+memory of the eleven spec files -- the README hadn't been touched since
+that first pass (after v1.5), so everything from v1.6 (curiosity) through
+v1.12 (the dashboard) was completely undocumented for anyone browsing the
+repo: the mouse-chase minigame, real away detection + the welcome-back
+message, the command bar and its now-twelve commands, reminders, the
+settings panel, and the dashboard.
+
+**Rewrote `README.md` end to end**, following the brief's own section
+list:
+
+- **Feature list regrouped by how you interact with it**, per the brief's
+  own suggested framing, rather than staying purely categorical: "the
+  ambient companion side" (mood, badges, distraction/focus reactions,
+  curiosity, presence/away, personality/interaction, notifications,
+  personalization -- everything that happens on its own) and "the
+  assistant-tool side" (the command bar, settings panel, dashboard --
+  everything you actively invoke). The old flat category list was folded
+  into the first half rather than discarded, since the categories
+  themselves were still accurate, just needed a level above them.
+- **A new "Command bar" section** with the hotkey and a full command
+  table, **pulled from `commands.py`'s actual `COMMANDS_HELP_TEXT` and
+  `_dispatch_command`, not from memory of the specs** as the brief
+  specifically warned -- confirmed this mattered: the original v1.9 spec
+  only ever specified `streak`/`commits`/`battery`/`rename`/`chase`/`help`/
+  `quit`; `remind`/`reminders`/`cancel` (v1.10) and `settings`/`dashboard`
+  (v1.11/v1.12) were added in later rounds and would have been missed
+  entirely working from spec memory alone.
+- **A new "Windows" section** explaining the overlay-vs-normal window
+  split plainly, pulling the exact flag combinations from the source
+  (`window.py`/`mouse_window.py`/`command_bar_window.py` vs.
+  `settings_window.py`/`dashboard_window.py`) rather than paraphrasing.
+- **Configuration table updated** to lead with the settings panel as the
+  primary way to configure things now, while explicitly keeping the
+  underlying JSON file paths/shapes documented for anyone who prefers
+  hand-editing (the panel reads/writes the exact same files, nothing about
+  their location changed) -- plus a new explicit line for what the settings
+  panel deliberately does **not** cover (badge thresholds, sulking/away
+  timing, the hotkey combo, spawn intervals), since v1.11's own spec was
+  explicit that scoping those out was deliberate, not an oversight, and a
+  reader shouldn't be left assuming Settings is now fully comprehensive.
+- **"How it's built" gained a second paragraph**, per the brief's "your
+  call whether that's genuinely additive" instruction -- judged that it
+  was: the existing independent-overlay-layers principle only explains the
+  *ambient* half of the app now, and the assistant-tool half genuinely
+  runs on a second, different principle worth naming (one shared
+  implementation/several thin entry points -- `commands.py`'s dispatch
+  table calling the same methods the tray already calls, and `reminders.py`'s
+  `sorted_by_due`/`format_reminder_row` now shared by three separate UI
+  surfaces). Not padding -- this is a real, distinct architectural pattern
+  from the first paragraph's, not a restatement of it.
+- **Project structure fully regenerated** by actually listing
+  `src/gitten/`, `tests/`, `scripts/`, and `assets/` on disk (`ls`, not
+  editing the prior tree) -- confirmed stale exactly as the brief warned:
+  the previous tree was still missing 13 modules that had shipped since the
+  last regeneration (`app_launch.py`, `visible_windows.py`, `mouse_game.py`,
+  `mouse_window.py`, `system_idle.py`, `command_bar_hotkey.py`,
+  `command_bar_window.py`, `commands.py`, `reminders.py`,
+  `settings_window.py`, `dashboard_window.py`, `telegram_lists.py`, and an
+  `assets/` entry at all).
+- **Roadmap rewritten from a real check**: grepped every `GITTEN_V1_*_SPEC.md`
+  for deferred/out-of-scope language (v1.6 through v1.9 turned out to have
+  none written in that form -- their scope notes are elsewhere in each
+  spec's prose) and cross-referenced this file's own record of what
+  actually shipped, rather than assuming the old roadmap was still
+  accurate. Two real, substantive changes: **removed** "a full settings
+  UI" from the deferred list (resolved by v1.11 -- leaving it would have
+  been actively wrong, not just stale) and **added** a new item that
+  genuinely is still open and easy to have missed: v1.11 explicitly scoped
+  the settings panel to *never* cover badge thresholds/away-timing/the
+  hotkey combo/spawn intervals, and separately, `command_bar_hotkey.py`'s
+  own code comment (confirmed by reading the file directly) still says
+  "there's no other way to summon it yet" if `RegisterHotKey` fails --
+  both genuinely unresolved gaps, not carried forward reflexively. Telegram's
+  status was re-confirmed unchanged (still just the standalone script +
+  credential/list persistence, `telegram_watcher.py` still doesn't exist)
+  and stated plainly rather than left to quietly age out of the roadmap,
+  per the brief's explicit instruction.
+- **Screenshots**: `assets/demo.png` was left as-is (still accurate, no
+  redo needed per the brief). Settings and Dashboard **were** captured as
+  real `QScreen.grabWindow` screenshots -- practical in this environment,
+  confirmed by the fact that both windows were already screenshotted this
+  way during their own v1.11/v1.12 build sessions -- rather than left as a
+  TODO. Settings shows the Distraction tab specifically (judged more
+  representative of "a real settings UI" for a reader skimming the README
+  than the sparser General tab, since it's the one that shows off the
+  shared list-editor pattern reused across three of the five tabs);
+  Dashboard shows its default view with a real scratch repo's realistic
+  ~70-commit history, a real 4-day current streak next to a real longer
+  best streak, and two real pending reminders. Saved as `assets/settings.png`
+  and `assets/dashboard.png`, referenced inline in the README right where
+  each window is described. Generating the dashboard screenshot's scratch
+  data hit the exact same reversed-commit-order `git log --since` footgun
+  already recorded in section 25 -- fixed the same way (iterate oldest-day-
+  first), rather than rediscovering it from scratch.
+- Also added `GITTEN_HOUSEKEEPING_2_BRIEF.md` to version control, same
+  treatment every other spec/brief file in this repo has gotten (see
+  section 11/15 for the same pattern).
+
+**Version bump**: `pyproject.toml` was at `0.6.0`, unchanged since the
+first housekeeping round bumped it there for v1 through v1.5. Continued the
+same "one minor-version step per major round" scheme that round
+established rather than inventing a new one: v1.6 through v1.12 is seven
+more rounds, so `0.6.0` -> `0.13.0`.
+
+**Testing**: `pytest -q` -> unchanged at **234/234 passed** (no `.py` file
+was touched this round -- README/assets/pyproject-version only, confirmed
+by `git status` before committing). No other testing applies to a
+documentation-only round beyond the screenshot verification described
+above.
+
+Committed separately from any code change (there wasn't any this round),
+per the brief's explicit instruction, and pushed to `origin/main`.
