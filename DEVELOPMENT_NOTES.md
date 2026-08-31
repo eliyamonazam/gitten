@@ -2523,6 +2523,103 @@ dispatch wiring, the popup, and the global hotkey, per the spec's explicit
 instruction not to trust an off-screen assumption for any of them), and
 documented in the order they were actually built.
 
+### Bugfix: the command bar was invisible
+
+Reported after the session above: the popup worked functionally (Enter/
+Escape/focus-loss, the real hotkey, real replies) but had **no visible
+box on screen** -- just a bare `QLineEdit` floating with nothing behind it,
+so there was nothing showing *where* to type.
+
+**Root cause**: `CommandBarWindow.__init__` set a QSS stylesheet
+(`background-color: rgba(...); border-radius: 8px;`) on the top-level
+`QWidget` itself via `setObjectName` + `setStyleSheet`. This looked
+identical in shape to how `window.py`'s inbox panel styles itself, but it
+doesn't actually work the same way: **a plain `QWidget` never paints its
+own stylesheet background/border unless `Qt.WA_StyledBackground` is also
+set.** Widgets with a default `paintEvent` that consults the current style
+(`QPushButton`, `QLabel`, `QFrame`, ...) get this for free; a bare
+`QWidget` subclass with no custom `paintEvent` does not, and this one had
+none -- so the rounded rect in the stylesheet was silently never
+rendered, leaving `WA_TranslucentBackground` fully transparent everywhere
+including where the "backdrop" was supposed to be. `pytest`/the earlier
+live keyboard/focus tests never caught this because none of them checked
+*pixels* -- they only asserted on signals, visibility flags, and text,
+all of which were correct regardless of whether anything was actually
+painted.
+
+**Fix**: replaced the stylesheet-background approach with a `paintEvent`
+override that draws the rounded backdrop directly with `QPainter`
+(`QColor(32, 32, 36, 235)` fill, a lighter `QColor(110, 110, 118)` 1px
+border, `_CORNER_RADIUS = 10`) -- the same "draw it yourself with
+QPainter primitives on a translucent window" approach every other
+transparent top-level widget in this codebase already uses successfully
+(`sprite.py`'s `paint_kitten`, `MouseWindow`'s `paint_mouse`), rather than
+leaning on QSS painting a plain `QWidget`'s background, which doesn't work
+without the extra attribute. The `QLineEdit`'s own stylesheet stays (it's
+a real `QLineEdit`, which *does* paint its own stylesheet correctly) but
+switched to fully `background: transparent` so the backdrop underneath
+shows through, plus an explicit `selection-background-color`/
+`selection-color` for a clearly visible text-selection state against the
+dark backdrop. The layout gained `_PADDING = 8` px of margin on all sides
+(previously 0) so the backdrop visibly frames the input with breathing
+room instead of being flush with its edges, per the bug report's "reasonable
+padding" ask.
+
+**Testing -- this time actually checking pixels, not just paintEvent
+running, per the explicit instruction**: a live script ran a real,
+fully-wired `GittenApp`, sent a real simulated physical Ctrl+Alt+G key
+press (`user32.keybd_event`, the same technique as the v1.9 hotkey tests
+above) to summon the popup through the real registered hotkey, typed
+`"streak"` via real `QTest` keyboard events, then took a **real screen
+grab** (`QScreen.grabWindow`, capturing actual composited desktop pixels,
+not an off-screen `QPixmap` render) of the region the popup landed in and
+saved it to a PNG.
+
+- **The PNG was actually opened and visually inspected** (not just
+  pixel-sampled) -- it clearly shows a rounded dark panel with a visible
+  lighter border, sitting on top of the real desktop background (a dark
+  wallpaper, with the kitten's sprite visibly peeking out just below the
+  bar), with white "streak" text and a visible text cursor inside it. This
+  is the direct confirmation the bug report specifically asked for:
+  clearly visible against a normal desktop background.
+- **A pixel-level regression check** was added on top of the visual
+  inspection: sampled the composited color at the backdrop's center pixel
+  and compared it to the exact color `paintEvent` was asked to paint
+  (`32, 32, 36`) -- came back `(30, 31, 36)`, a difference of 3 total
+  across all three channels (well within anti-aliasing/compositing
+  rounding), confirming the intended paint operation is what's actually
+  reaching the screen. **An earlier version of this same check used a
+  "differs from a neighboring desktop pixel" heuristic instead and
+  intermittently failed** even after the fix was visually confirmed
+  correct -- because the particular desktop wallpaper corner it happened
+  to sample was independently dark, making the diff too small to clear an
+  arbitrary threshold. Replaced with the exact-color-match check above,
+  which is what's recorded here; a lesson for any future pixel-based live
+  check in this codebase: assert against the known intended color, not an
+  assumption about what the surrounding desktop looks like.
+- Re-ran the earlier Part 3 live keyboard/focus test (Enter submits +
+  closes, Escape discards + closes, real OS focus-loss closes) unchanged
+  after the fix -- still 3/3 passing, confirming the visual fix didn't
+  regress any interaction behavior.
+- `pytest -q` -> unchanged at **167/167 passed** (this was a pure
+  rendering fix, no logic/test changes).
+
+**A process-hygiene note from this session, not a code bug**: partway
+through this fix's live testing, `RegisterHotKey` started failing with
+Windows error 1409 (`ERROR_HOTKEY_ALREADY_REGISTERED`) even though no
+test script *appeared* to still be running. `tasklist` found one leftover
+`python.exe` still alive from an earlier live-test script in the previous
+session -- one that had called `watcher.set_repo(...)` (starting a
+`watchdog.Observer` thread, which isn't a daemon thread) but never called
+`watcher.stop()` or unregistered its hotkey before the script's main flow
+ended, so the interpreter never actually exited despite reaching the end
+of the script. Killed the stray process (`taskkill`) to free the hotkey,
+matching this exact same class of issue already recorded in section 4's
+v1 "zombie processes" debugging story -- worth remembering for any future
+live-test script in this project that calls `watcher.set_repo(...)`:
+either call `watcher.stop()` at the end, or expect the process to hang
+around afterward.
+
 ## 21. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file

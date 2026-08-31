@@ -17,15 +17,39 @@ proven by `KittenWindow`/`MouseWindow`, but *without*
 those two windows, this one is a real text box and has to actually receive
 keyboard focus to be usable, so it can't reuse those two focus-suppressing
 flags verbatim.
+
+The visible rounded backdrop behind the input is painted directly with
+`QPainter` in `paintEvent`, the same way every other transparent top-level
+window in this codebase (`KittenWindow`/`sprite.py`, `MouseWindow`) draws
+its own visuals -- **not** a QSS `background-color` on the bare `QWidget`
+itself, which was tried first and turned out invisible: a plain `QWidget`
+never actually paints its stylesheet's background/border unless
+`Qt.WA_StyledBackground` is also set (widgets like `QPushButton`/`QLabel`
+get this for free from their own default `paintEvent`, a bare `QWidget`
+does not) -- see DEVELOPMENT_NOTES.md's v1.9 bugfix entry for how this was
+caught and confirmed live.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QWidget
 
 COMMAND_BAR_WIDTH = 260
 COMMAND_BAR_HEIGHT = 40
+
+# The backdrop's visual style -- a near-opaque dark rounded panel with a
+# faint lighter border, matching the inbox panel's dark-panel palette
+# (window.py's `_build_inbox_panel`) so the popup reads as part of the same
+# app rather than a mismatched new look.
+_BACKDROP_COLOR = QColor(32, 32, 36, 235)
+_BORDER_COLOR = QColor(110, 110, 118, 255)
+_CORNER_RADIUS = 10
+# Padding between the window edge and the QLineEdit, so the rounded
+# backdrop shows a clear margin all the way around the text rather than
+# being flush with it.
+_PADDING = 8
 
 
 class CommandBarWindow(QWidget):
@@ -39,23 +63,31 @@ class CommandBarWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.resize(COMMAND_BAR_WIDTH, COMMAND_BAR_HEIGHT)
 
-        self.setObjectName("commandBar")
-        self.setStyleSheet(
-            "#commandBar { background-color: rgba(32, 32, 36, 235); border-radius: 8px; }"
-        )
-
         self._input = QLineEdit(self)
         self._input.setPlaceholderText("type a command... (help)")
+        # High-contrast white text/selection against the dark backdrop
+        # paintEvent draws below; the QLineEdit itself stays fully
+        # transparent so the rounded backdrop shows through around it.
         self._input.setStyleSheet(
             "background: transparent; color: white; border: none;"
-            "font-size: 14px; padding: 0 10px;"
+            "font-size: 14px; selection-background-color: #4a90d9;"
+            "selection-color: white;"
         )
         self._input.returnPressed.connect(self._submit)
         self._input.installEventFilter(self)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(_PADDING, _PADDING, _PADDING, _PADDING)
         layout.addWidget(self._input)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(_BORDER_COLOR)
+        painter.setBrush(_BACKDROP_COLOR)
+        # Inset by 1px so the 1px border itself doesn't get clipped at the
+        # window edge.
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), _CORNER_RADIUS, _CORNER_RADIUS)
 
     def show_near(self, x: int, y: int) -> None:
         """Show the bar at (x, y) -- already clamped to the screen by the
