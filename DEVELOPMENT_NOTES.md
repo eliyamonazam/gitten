@@ -1925,8 +1925,96 @@ forever, and determinism given a seeded RNG. This part is pure logic with
 no Qt/win32 involved at all, so pytest is the right and sufficient test
 here -- no separate live check was needed (unlike Parts 1, 2, and 4).
 
-(Part 4 continues in the section below, added once it was actually built
-and verified.)
+### Part 4: Wiring it together (`main.py`)
+
+A new standalone `available_geometry()` in `window.py` (the primary
+screen's available geometry, excluding the taskbar) was pulled out of
+`default_position()`'s existing screen-query logic *without changing
+`default_position()` itself* -- so `main.py`'s new mouse-spawn code has
+somewhere to get screen bounds from without duplicating that query or
+risking any behavior change to code that already worked.
+
+A new single-shot `_mouse_spawn_timer`, scheduled and rescheduled exactly
+like the existing `_oneliner_timer` (`_schedule_next_mouse_spawn` /
+`_on_mouse_spawn_timer`, same "always reschedule regardless of whether this
+occurrence actually did anything" pattern, and deliberately its own
+independent timer/cadence rather than piggybacking on the one-liner timer,
+since the spec called for "its own cadence"). On a poll that passes
+`should_spawn_mouse`, `_start_mouse_chase()`: picks a spawn point via
+`pick_spawn_position`, saves the cat's current position as
+`self._chase_start_pos`, shows the mouse window there, and calls
+`self.window.walk_to(mouse_x, mouse_y, on_arrived=self._on_mouse_caught)`.
+
+`_on_mouse_caught` -- the "caught" callback -- hides the mouse window,
+calls the new `window.trigger_catch_effect()` (a 10-particle burst radiating
+outward from the cat's current center over 0.5s, reusing `ParticleSystem`
+completely unchanged per the spec, same system already used for the drag
+trail and shooting star -- particles tracked in global screen coordinates
+and converted to local at paint time, same convention established for
+those two features), clears the chase state, and walks back to the saved
+pre-chase position with a second `walk_to` call (no `on_arrived` needed
+this time -- arriving home doesn't need to trigger anything further).
+
+**Mid-chase drag handling**: `main.py` connects `window.walk_cancelled` to
+`_on_walk_cancelled`, which -- only if `self._is_chasing` is still true at
+that moment -- hides the mouse window and clears the chase state
+immediately, per the spec's explicit "don't leave it stranded on screen
+with nothing chasing it" instruction. Because `_is_chasing` is set back to
+`False` the moment the mouse is actually caught (before the return walk is
+even issued), a drag that interrupts the *return* walk correctly does
+nothing extra here -- there's no mouse window left to hide by that point,
+and the cat simply stops wherever it was dragged, which is the same "drag
+always wins, no exceptions" behavior every other autonomous animation in
+this codebase already has.
+
+### Testing (Part 4, full sequence, live)
+
+`pytest -q` -> unchanged at **136/136 passed** (no new pure-logic module in
+this part -- it's wiring on top of Parts 1-3).
+
+**Live, end to end, against a real, fully-wired `GittenApp`** (bypassing
+only the real 45-90 minute timer by calling `_start_mouse_chase()`
+directly for a deterministic trigger -- everything downstream ran for
+real, nothing else mocked):
+
+- Confirmed the mouse window actually appears (`isVisible()`, exact spawned
+  position) and the cat's real position genuinely converges toward it: sampled
+  its distance to the mouse before and after 3 real animation frames and
+  confirmed it measurably decreased (246.6px -> 222.5px in one run), not a
+  teleport and not static.
+- **A real timing subtlety worth recording**: the forward-arrival ->
+  catch-effect -> return-walk-start chain all happens synchronously inside
+  one `_step_walk()` call, so `is_walking` never observably reads `False`
+  "at the mouse, before walking home" from outside the object -- by the
+  time a poll loop sees it go `False`, the return walk has frequently
+  *already finished too*. A first attempt at this test asserted the cat's
+  position at "arrival" and failed because the round trip had already
+  completed by the first check. Fixed by spying on `trigger_catch_effect`
+  itself (an instance-level wrap of a plain Python method -- safe, unlike
+  monkeypatching a compiled Qt/Shiboken method such as `QMenu.exec`, which
+  this project's own v1.5 dev notes already flag as corrupting state) to
+  observe exactly when it fires and how many particles exist at that exact
+  instant (10, confirmed), regardless of how fast everything continues
+  afterward.
+- Confirmed the mouse window is hidden once caught, and that the cat
+  genuinely walks itself all the way back to the exact position it was at
+  before the chase started (polled to convergence, not just checked once).
+- Triggered a fresh chase and sent a real synthetic left-button
+  `mousePressEvent` mid-walk (confirmed several real frames had already
+  elapsed first, so it was genuinely mid-walk, not still at the spawn
+  moment): confirmed the walk stopped immediately, the mouse window was
+  hidden right away rather than left stranded, and the chase state
+  (`_is_chasing`, `_chase_start_pos`) was fully cleared.
+- Confirmed a subsequent `_start_mouse_chase()` call right after that
+  cancellation starts a completely normal new chase -- not stuck thinking
+  one is still in progress, proving the cancellation path resets state
+  completely rather than partially.
+
+With this, all four parts of v1.7 are implemented, tested (unit tests for
+the pure `mouse_game.py` logic; live, real-widget/real-event-loop testing
+for every Qt-facing part, per the spec's explicit instruction not to trust
+off-screen reasoning alone), and documented in the order they were
+actually built.
 
 ## 19. Working agreement for this project
 

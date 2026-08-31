@@ -76,6 +76,17 @@ INBOX_UNAVAILABLE = "unavailable"
 INBOX_ACCESS_NOT_GRANTED = "not_granted"
 
 
+def available_geometry() -> QRect:
+    """The primary screen's available geometry (excluding the taskbar) --
+    the same source `KittenWindow.default_position()` already uses for
+    where the cat sits by default, exposed standalone (not touching
+    `default_position` itself) so v1.7's mouse-spawn logic can pick a
+    random point within it without duplicating the screen-query code."""
+    screen = QGuiApplication.primaryScreen()
+    geo = screen.availableGeometry() if screen else None
+    return geo if geo is not None else QRect(0, 0, 800, 600)
+
+
 class KittenWindow(QWidget):
     moved = Signal(QPoint)
     # Any left- or right-button press on the cat, whether or not it turns

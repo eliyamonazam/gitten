@@ -32,6 +32,12 @@ from gitten.focus import DEFAULT_FOCUS_CONFIG_PATH, load_focus_substrings
 from gitten.foreground_window import get_foreground_window
 from gitten.git_watcher import GitWatcher, count_commits_today, get_commit_streak
 from gitten.mood import Mood, MoodMachine
+from gitten.mouse_game import (
+    pick_spawn_position,
+    random_spawn_interval_seconds,
+    should_spawn_mouse,
+)
+from gitten.mouse_window import MouseWindow
 from gitten.notifications import fetch_notifications, request_access
 from gitten.notifications import is_supported as notifications_supported
 from gitten.oneliners import (
@@ -45,7 +51,12 @@ from gitten.sprite import paint_kitten
 from gitten.status_badge import StatusBadgeTracker
 from gitten.system_monitor import is_focus_process_running, sample_system
 from gitten.visible_windows import get_visible_window_pids
-from gitten.window import INBOX_ACCESS_NOT_GRANTED, INBOX_UNAVAILABLE, KittenWindow
+from gitten.window import (
+    INBOX_ACCESS_NOT_GRANTED,
+    INBOX_UNAVAILABLE,
+    KittenWindow,
+    available_geometry,
+)
 
 ORG_NAME = "Gitten"
 APP_NAME = "Gitten"
@@ -114,11 +125,19 @@ class GittenApp:
         # a simultaneous new launch.
         self._known_window_pids: set[int] = set()
         self._last_curiosity_reaction_at: float | None = None
+        # v1.7 mouse-chase minigame state: whether a chase is currently in
+        # progress, and where the cat was standing right before it started
+        # (so catching the mouse can walk it back there afterward without
+        # permanently disturbing its saved/anchored position).
+        self._is_chasing = False
+        self._chase_start_pos = None
         self.watcher = GitWatcher()
         self.window = KittenWindow()
         self.window.set_context_menu_callback(self._show_context_menu)
         self.window.interacted.connect(self._on_interacted)
         self.window.plain_clicked.connect(self._on_plain_click)
+        self.window.walk_cancelled.connect(self._on_walk_cancelled)
+        self.mouse_window = MouseWindow()
         self._session_start = time.monotonic()
 
         self._build_tray()
@@ -152,6 +171,11 @@ class GittenApp:
         self._oneliner_timer.setSingleShot(True)
         self._oneliner_timer.timeout.connect(self._on_oneliner_timer)
         self._schedule_next_oneliner()
+
+        self._mouse_spawn_timer = QTimer()
+        self._mouse_spawn_timer.setSingleShot(True)
+        self._mouse_spawn_timer.timeout.connect(self._on_mouse_spawn_timer)
+        self._schedule_next_mouse_spawn()
 
         self.window.show()
 
@@ -436,6 +460,60 @@ class GittenApp:
             else:
                 self.window.show_nudge(pick_oneliner())
         self._schedule_next_oneliner()
+
+    def _schedule_next_mouse_spawn(self) -> None:
+        self._mouse_spawn_timer.start(int(random_spawn_interval_seconds() * 1000))
+
+    def _on_mouse_spawn_timer(self) -> None:
+        """Fires on its own random 45-90 minute cadence (v1.7), independent
+        of the one-liner timer. Only actually starts a chase if
+        should_spawn_mouse's gating passes -- otherwise this occurrence is
+        silently skipped and the next one is rescheduled regardless, same
+        "always reschedule" pattern as _on_oneliner_timer."""
+        is_sulking = self.attention_tracker.state == AttentionState.SULKING
+        if should_spawn_mouse(
+            self.window.view_mode, is_sulking, self._is_chasing, self.window.is_dragging
+        ):
+            self._start_mouse_chase()
+        self._schedule_next_mouse_spawn()
+
+    def _start_mouse_chase(self) -> None:
+        geo = available_geometry()
+        cat_pos = self.window.pos()
+        mouse_x, mouse_y = pick_spawn_position(
+            geo.left(), geo.top(), geo.right(), geo.bottom(), cat_pos.x(), cat_pos.y()
+        )
+        self._chase_start_pos = cat_pos
+        self._is_chasing = True
+        self.mouse_window.show_at(mouse_x, mouse_y)
+        self.window.walk_to(int(mouse_x), int(mouse_y), on_arrived=self._on_mouse_caught)
+
+    def _on_mouse_caught(self) -> None:
+        """The cat's walk_to toward the mouse arrived -- "caught" it. Hides
+        the mouse, plays a catch-effect particle burst at the cat's current
+        position, then walks the cat back to wherever it was standing
+        before the chase started so the game doesn't permanently disturb
+        its saved/anchored position."""
+        self.mouse_window.hide()
+        self.window.trigger_catch_effect()
+        self._is_chasing = False
+        return_pos = self._chase_start_pos
+        self._chase_start_pos = None
+        if return_pos is not None:
+            self.window.walk_to(return_pos.x(), return_pos.y())
+
+    def _on_walk_cancelled(self) -> None:
+        """A real user drag interrupted an in-progress walk_to (Part 1's
+        rule: user input always wins over an autonomous animation). If this
+        happened mid-chase, don't leave the mouse window stranded on screen
+        with nothing chasing it -- hide it and reset the chase state right
+        away. (If it happened during the *return* walk after already
+        catching the mouse, _is_chasing is already False by then and this
+        is correctly a no-op -- there's no mouse window left to hide.)"""
+        if self._is_chasing:
+            self.mouse_window.hide()
+            self._is_chasing = False
+            self._chase_start_pos = None
 
     def run(self) -> int:
         return self.app.exec()
