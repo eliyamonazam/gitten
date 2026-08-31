@@ -59,6 +59,8 @@ def paint_kitten(
     badge: Badge | None = None,
     nudge_text: str | None = None,
     nudge_opacity: float = 0.0,
+    nudge_elapsed: float = 0.0,
+    nudge_alert: bool = False,
     turn_stage: int | None = None,
     streak: int = 0,
     focused: bool = False,
@@ -77,6 +79,15 @@ def paint_kitten(
     painter.translate(rect.center())
     painter.scale(scale, scale)
     painter.translate(-CANVAS / 2, -CANVAS / 2)
+
+    # Normally rect.width() == rect.height() == the fixed window size, and
+    # this equals CANVAS/2 exactly. But window.py temporarily widens the
+    # physical window (keeping height fixed, so `scale` above -- and every
+    # other proportion in this whole function -- stays unchanged) to fit a
+    # nudge bubble too wide for the plain canvas; this is how much
+    # canvas-unit half-width is actually available to draw into for this
+    # particular call, used only by the nudge bubble's own clamping below.
+    canvas_half_width = rect.width() / (2 * scale)
 
     breathe = 1.0 + 0.018 * math.sin(t * 2.0)
     # v1.8: the AWAY "deep sleep" pose breathes noticeably slower and deeper
@@ -204,7 +215,16 @@ def paint_kitten(
 
     if nudge_text and nudge_opacity > 0.0:
         _draw_nudge_wave(painter, center, t)
-        _draw_speech_bubble(painter, center, nudge_text, nudge_opacity)
+        _draw_speech_bubble(
+            painter,
+            center,
+            nudge_text,
+            nudge_opacity,
+            t=t,
+            elapsed=nudge_elapsed,
+            alert=nudge_alert,
+            canvas_half_width=canvas_half_width,
+        )
 
     # The high-five doesn't change the face/mood at all -- it's purely an
     # additive raised-paw overlay, drawn last (on top of everything else),
@@ -932,37 +952,156 @@ def _draw_nudge_wave(painter: QPainter, center: QPointF, t: float) -> None:
     painter.restore()
 
 
-def _draw_speech_bubble(painter: QPainter, center: QPointF, text: str, opacity: float) -> None:
+# v1.10 bugfix: the bubble's vertical anchor used to be `center.y() -
+# BODY_RY * 1.9 - bubble.height() / 2`, which pinned the bubble's *bottom*
+# edge at a fixed canvas y of ~13 regardless of its height -- for the
+# bubble's actual height (~26 units at this font size), that put its *top*
+# edge at roughly y=-13, well above the canvas's own y=0 top edge. Qt clips
+# all painting to the widget's own bounds, and this window is only ~130px
+# tall with no room above it, so the top half of every nudge bubble ever
+# shown -- including the text, vertically centered in that top half -- was
+# silently clipped off screen. This was never caught because every prior
+# session verified nudges by checking `window._nudge_text` (an internal
+# string), never by actually screenshotting a live, positioned window --
+# see DEVELOPMENT_NOTES.md's v1.10 bugfix entry for how this was found and
+# confirmed with a real QScreen.grabWindow capture. Fixed with a lower,
+# fixed bottom-anchor offset (clearing the resting ear tips with margin to
+# spare) plus a defensive top clamp mirroring the left/right clamps already
+# below, so this can never silently clip again even for a taller bubble.
+_NUDGE_BUBBLE_BOTTOM_OFFSET = BODY_RY * 1.05
+
+# v1.10: a distinctly more "alert" treatment for reminder-sourced nudges,
+# reusing this codebase's existing low-battery-badge amber (`#FB8C00`,
+# status_badge Badge.LOW_BATTERY's color) rather than inventing a new
+# "urgent" color from scratch -- it already reads as "pay attention" here.
+_ALERT_FILL_COLOR = QColor("#FFF3E0")
+_ALERT_BORDER_COLOR = QColor("#FB8C00")
+_ALERT_ICON_RESERVE = 20.0
+_ALERT_POP_SECONDS = 0.22
+
+
+def nudge_bubble_size(text: str, alert: bool) -> tuple[float, float]:
+    """The natural (unclamped) single-line bubble size, in canvas units,
+    for `text`/`alert` -- the single source of truth for this geometry,
+    shared between `_draw_speech_bubble`'s actual drawing below and
+    `KittenWindow._grow_for_nudge` (window.py), which needs to know how
+    wide the *physical window itself* must temporarily grow to fit a long
+    reply without clipping it -- see the v1.10 bugfix entry in
+    DEVELOPMENT_NOTES.md for why the window has to grow at all rather than
+    just repositioning the bubble within a fixed size."""
+    font = QFont("Segoe UI", 9, QFont.Bold if alert else QFont.Normal)
+    metrics = QFontMetricsF(font)
+    padding_x, padding_y = 8.0, 5.0
+    icon_reserve = _ALERT_ICON_RESERVE if alert else 0.0
+    tw = metrics.horizontalAdvance(text)
+    th = metrics.height()
+    return tw + padding_x * 2 + icon_reserve, th + padding_y * 2
+
+
+def _draw_speech_bubble(
+    painter: QPainter,
+    center: QPointF,
+    text: str,
+    opacity: float,
+    t: float = 0.0,
+    elapsed: float = 0.0,
+    alert: bool = False,
+    canvas_half_width: float = CANVAS / 2,
+) -> None:
     painter.save()
     painter.setOpacity(max(0.0, min(1.0, opacity)))
 
-    font = QFont("Segoe UI", 9)
+    font = QFont("Segoe UI", 9, QFont.Bold if alert else QFont.Normal)
     painter.setFont(font)
-    metrics = QFontMetricsF(font)
-    padding_x, padding_y = 8.0, 5.0
-    tw = metrics.horizontalAdvance(text)
-    th = metrics.height()
+    padding_x = 8.0
+    icon_reserve = _ALERT_ICON_RESERVE if alert else 0.0
+    bubble_w, bubble_h = nudge_bubble_size(text, alert)
 
-    bubble = QRectF(0, 0, tw + padding_x * 2, th + padding_y * 2)
-    bubble.moveCenter(QPointF(center.x(), center.y() - BODY_RY * 1.9 - bubble.height() / 2))
-    # Keep the bubble from drifting past the drawing canvas at small sizes.
-    if bubble.left() < 2:
-        bubble.moveLeft(2)
-    if bubble.right() > CANVAS - 2:
-        bubble.moveRight(CANVAS - 2)
+    bubble = QRectF(0, 0, bubble_w, bubble_h)
+    bubble_bottom = center.y() - _NUDGE_BUBBLE_BOTTOM_OFFSET
+    bubble.moveCenter(QPointF(center.x(), bubble_bottom - bubble.height() / 2))
+    # Keep the bubble from drifting past the drawable area at small sizes --
+    # `canvas_half_width` is the *actual* available half-width for this
+    # paint call (normally CANVAS/2, but wider once window.py has grown the
+    # physical window to fit a long reply), not a fixed constant, so a long
+    # message can genuinely use the extra room rather than still being
+    # clamped to the original narrow bound.
+    left_bound = CANVAS / 2 - canvas_half_width + 2
+    right_bound = CANVAS / 2 + canvas_half_width - 2
+    if bubble.left() < left_bound:
+        bubble.moveLeft(left_bound)
+    if bubble.right() > right_bound:
+        bubble.moveRight(right_bound)
+    if bubble.top() < 2:
+        bubble.moveTop(2)
 
-    painter.setPen(_outline_pen(1.6))
-    painter.setBrush(WHITE)
+    # A quick "pop" grow-in for alert bubbles only, over the reminder's
+    # first ~0.2s on screen -- regular nudges keep the plain opacity-only
+    # fade-in unchanged, so this reads as reminder-specific emphasis, not a
+    # new universal animation.
+    if alert and elapsed < _ALERT_POP_SECONDS:
+        scale = 0.6 + 0.4 * max(0.0, elapsed / _ALERT_POP_SECONDS)
+        painter.translate(bubble.center())
+        painter.scale(scale, scale)
+        painter.translate(-bubble.center())
+
+    fill = _ALERT_FILL_COLOR if alert else WHITE
+    border = _ALERT_BORDER_COLOR if alert else OUTLINE_COLOR
+    pen = _outline_pen(2.2 if alert else 1.6)
+    pen.setColor(border)
+    painter.setPen(pen)
+    painter.setBrush(fill)
     painter.drawRoundedRect(bubble, 6.0, 6.0)
 
     tail = QPainterPath(QPointF(center.x() - 4, bubble.bottom() - 1))
     tail.lineTo(QPointF(center.x() + 4, bubble.bottom() - 1))
     tail.lineTo(QPointF(center.x(), bubble.bottom() + 7))
     tail.closeSubpath()
+    painter.setBrush(fill)
     painter.drawPath(tail)
 
-    painter.setPen(OUTLINE_COLOR)
-    painter.drawText(bubble, Qt.AlignCenter, text)
+    if alert:
+        icon_pos = QPointF(bubble.left() + padding_x + 7.0, bubble.center().y())
+        _draw_alarm_icon(painter, icon_pos, t)
+        text_rect = QRectF(
+            bubble.left() + padding_x + icon_reserve,
+            bubble.top(),
+            bubble.width() - padding_x * 2 - icon_reserve,
+            bubble.height(),
+        )
+        painter.setPen(OUTLINE_COLOR)
+        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
+    else:
+        painter.setPen(OUTLINE_COLOR)
+        painter.drawText(bubble, Qt.AlignCenter, text)
+    painter.restore()
+
+
+def _draw_alarm_icon(painter: QPainter, pos: QPointF, t: float) -> None:
+    """A small alarm-clock glyph shown at the left of an alert bubble --
+    distinct from the star/crown/battery icons elsewhere in this file, and
+    matching the clock emoji already used in `reminders.format_due_reply`.
+    A quick side-to-side "ring" jitter (reusing the same sine-wiggle idiom
+    as the purr-reaction ear wiggle) is the icon's own small contribution to
+    reading as more attention-grabbing than a static glyph."""
+    painter.save()
+    ring = 6.0 * math.sin(t * 9.0)
+    painter.translate(pos)
+    painter.rotate(ring)
+    radius = 6.5
+    painter.setPen(_outline_pen(1.2))
+    painter.setBrush(WHITE)
+    painter.drawEllipse(QPointF(0, 0), radius, radius)
+    # The two small "feet" that make it read as an alarm clock rather than
+    # a plain clock face.
+    painter.drawLine(QPointF(-4.6, -4.6), QPointF(-7.0, -7.4))
+    painter.drawLine(QPointF(4.6, -4.6), QPointF(7.0, -7.4))
+    # Hands, in the accent color so they stand out against the white face.
+    hand_pen = _outline_pen(1.3)
+    hand_pen.setColor(_ALERT_BORDER_COLOR)
+    painter.setPen(hand_pen)
+    painter.drawLine(QPointF(0, 0), QPointF(0, -3.6))
+    painter.drawLine(QPointF(0, 0), QPointF(2.8, 1.4))
     painter.restore()
 
 

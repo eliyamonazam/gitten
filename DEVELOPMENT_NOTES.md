@@ -2856,7 +2856,192 @@ commands, and the away-hold-and-flush firing behavior) are implemented,
 tested, and documented, and the settings panel / dashboard rounds the spec
 mentions can now build on real, persisted reminder data.
 
-## 22. Working agreement for this project
+## 22. Reminder-alert bugfix + design: the nudge bubble was clipped, and reminders now look like alerts
+
+A bug report plus a design request, both about the nudge bubble
+(`sprite._draw_speech_bubble`), the mechanism v1.10's reminders reuses for
+their reply text. Investigated and fixed with the same standard the v1.9
+command-bar backdrop bug held itself to: real `QScreen.grabWindow`
+screenshots, actually opened and looked at, not just internal-state
+assertions.
+
+### Bug: the bubble was a "blank/white flash"
+
+**Reproduced first, before touching any code**: a real, visible
+`KittenWindow`, a real `show_nudge()` call, and a real screen grab of the
+region above the cat (where the bubble draws) confirmed the report --
+mostly blank, no legible text.
+
+**Root cause, found by computing the bubble's actual geometry, not by
+guessing**: the bubble's vertical anchor was `center.y() - BODY_RY * 1.9 -
+bubble.height() / 2`, which pins the bubble's *bottom* edge at a fixed
+canvas y (~13) regardless of its height. At this font size the bubble is
+~26 canvas units tall, so its *top* edge landed at roughly y=-13 -- well
+above the canvas's own y=0 top edge. Qt clips all painting to the widget's
+own bounds, and this window is only ~130px tall with nothing above it, so
+the top half of the bubble -- including the text, vertically centered
+within that top half -- was silently clipped off screen on **every**
+nudge this app has ever shown, not just reminders. This was never caught
+before because every prior session verified nudges by checking
+`window._nudge_text` (an internal string), never by actually
+screenshotting a live, positioned window -- confirmed numerically first
+(`bubble.top() ≈ -13`) and then visually, exactly the same "internal state
+looked right, but nobody had actually looked at the pixels" root cause as
+the v1.9 command-bar backdrop bug two sessions ago.
+
+**Fix, Part 1 -- vertical**: a new fixed `_NUDGE_BUBBLE_BOTTOM_OFFSET =
+BODY_RY * 1.05` (clearing the resting ear tips with margin to spare,
+tuned and re-verified against a real screenshot rather than trusted from
+the math alone) replaces the old `BODY_RY * 1.9`, plus a defensive `if
+bubble.top() < 2: bubble.moveTop(2)` clamp added alongside the *existing*
+left/right clamps in the same function -- the bug was really that the
+function clamped two sides and silently forgot the third, an incomplete
+implementation of its own existing pattern, not a new concept.
+
+**Fix, Part 2 -- horizontal, found through the same rigor, not assumed
+fixed**: verifying the vertical fix with a screenshot of a long reminder
+message (`"while you were away, 2 reminders came due: first; second"`)
+surfaced a *second*, more fundamental clipping bug: that text is simply
+wider (~320 canvas units at 9pt bold) than the entire 128-unit canvas /
+~130px window, so no amount of repositioning within the existing window
+could ever fit it on one line, and wrapping it would need more vertical
+room than the fix above provides either. **This affects any long reply
+this codebase can produce**, not just reminders -- v1.9's own
+`COMMANDS_HELP_TEXT` is comparably long. Real fix: the window itself now
+temporarily *widens* to fit a wide bubble, mirroring the exact resize
+pattern the v1.2 notification inbox already established
+(`_resize_anchored_bottom_right`), just anchored at the bottom-*center*
+instead of bottom-right (the cat is always drawn horizontally centered in
+this window, so growing width-only while keeping the center and bottom
+edge fixed is what lets the window widen without the cat's own on-screen
+position ever visibly shifting):
+
+- `sprite.nudge_bubble_size(text, alert)` is a new small pure function --
+  the single source of truth for the bubble's natural (unclamped)
+  single-line size in canvas units, extracted out of
+  `_draw_speech_bubble`'s own geometry math so it can be called from
+  `window.py` too without the two ever drifting out of sync with each
+  other.
+- `KittenWindow._grow_for_nudge(text, alert)`, called from `show_nudge()`,
+  computes the physical pixel width needed (capped at 4x the base window
+  size, so pathological input can't produce an absurdly wide window) and
+  resizes via a new `_resize_anchored_bottom_center` -- built with
+  `QRect.moveCenter` + `QRect.moveBottom` (Qt's own accessors), the same
+  "don't hand-roll the arithmetic" lesson the v1.2 dev notes already
+  recorded after an inclusive-`bottomRight()` off-by-one bug there.
+- `_shrink_to_base_size()` resizes back down once the nudge actually
+  expires. Moving *when* that happens required a small refactor:
+  mutating widget geometry from inside `paintEvent` (where the old
+  `_nudge_opacity` used to clear expired nudge state) is risky in Qt, so
+  expiry detection moved to a new `_check_nudge_expiry()`, called from the
+  existing `_on_animation_tick` (outside any paint call) instead;
+  `_nudge_opacity` is now a plain, side-effect-free read.
+- `paint_kitten` computes `canvas_half_width = rect.width() / (2 *
+  scale)` (normally exactly `CANVAS/2`, wider once the window has grown)
+  and threads it into `_draw_speech_bubble`'s left/right clamps, so a wide
+  bubble can actually use the extra room instead of still being clamped to
+  the original narrow bound.
+
+**Testing -- live, with real screenshots actually opened and inspected,
+per the explicit instruction**: the same real-window/real-`show_nudge`
+script used to reproduce the bug was re-run after each fix. A regular
+short nudge (`"Commits today: 3"`) now renders fully inside a correctly
+positioned bubble, no clipping. The long combined-reminder message now
+renders **on one line, in full**, inside a visibly widened window (628px
+window at that geometry vs. the base 130px), confirmed both by opening
+the saved PNG and by the window's own reported geometry growing as
+expected. `pytest -q` -> unchanged at **202/202 passed** (this was Qt
+rendering/geometry code with no new pure-logic module).
+
+### Design: reminders now look like an alert, not a routine nudge
+
+Per the request, reminder-sourced nudges get a visibly distinct
+treatment, implemented as an additive `alert: bool` parameter threaded
+through `show_nudge` -> `paint_kitten` -> `_draw_speech_bubble` (default
+`False`, so every existing call site -- one-liners, the distraction
+nudge, the welcome-back message -- is completely unaffected, the same
+additive-parameter discipline every feature in this codebase has used
+since v1.1's badges):
+
+- **A distinct color treatment**: a warm amber fill (`#FFF3E0`) and a
+  bold `#FB8C00` border (2.2px vs. the regular bubble's 1.6px) -- reusing
+  this codebase's *existing* low-battery-badge amber
+  (`status_badge.Badge.LOW_BATTERY`'s color in `sprite.py`) rather than
+  inventing a new "urgent" color from scratch, since it already reads as
+  "pay attention" here.
+- **Bold text** (`QFont.Bold`) instead of the regular nudge's normal
+  weight.
+- **A small drawn alarm-clock icon** (`_draw_alarm_icon`, new) at the
+  bubble's left edge -- a circle with two small "feet" (reading as an
+  alarm clock specifically, not a plain clock face) and two hands in the
+  accent color, plus a small continuous side-to-side "ring" jitter reusing
+  the same sine-wiggle idiom as the purr reaction's ear wiggle. Matches
+  the clock imagery already established by `reminders.format_due_reply`'s
+  original emoji -- which is why that emoji was then **removed** from the
+  reply text itself (`reminders.py`): once the bubble draws its own alarm
+  icon, keeping a matching "⏰" glyph in the text was redundant, confirmed
+  visually (a live screenshot showed both at once, looking like an
+  unintentional double icon) before removing it, not just assumed.
+- **A noticeably longer display duration**: `show_nudge` gained a
+  `duration` parameter (defaulting to the existing `NUDGE_DURATION_SECONDS`
+  = 4s for every other caller); reminders pass the new
+  `REMINDER_NUDGE_DURATION_SECONDS = 9s`, more than double, "long enough
+  to comfortably read" even the combined multi-reminder flush message.
+- **A small pop-in entrance**: over the reminder's first 0.22s on screen,
+  the bubble scales in from 0.6x to 1.0x (`_ALERT_POP_SECONDS`) --
+  computed from a new `nudge_elapsed` value `window.py` threads through
+  (captured *before* `_nudge_opacity` runs, since that call can clear the
+  nudge's start time the instant it expires). Regular nudges pass
+  `elapsed=0.0`/`alert=False` and keep their plain opacity-only fade-in
+  completely unchanged -- this animation is reminder-specific emphasis,
+  not a new universal behavior.
+
+`main.py`'s `_fire_reminders` (the one place reminders actually reach the
+nudge bubble, for both the present-tick and away-flush firing paths --
+see section 21) is the only call site that passes
+`duration=REMINDER_NUDGE_DURATION_SECONDS, alert=True`; every other
+`show_nudge` call in the codebase is untouched and keeps the plain look.
+
+**Testing -- live screenshots, plus the same pixel-diff standard this
+codebase already holds itself to for "genuinely distinct, not just
+reasoned about" claims (v1.5's purr-vs-focused, v1.6's curious-vs-focused,
+v1.8's away-vs-idle)**:
+
+- A live screenshot of a real fired alert bubble (`"take a break"`)
+  actually opened and inspected: amber border, warm fill, bold text, and
+  the alarm icon with its two feet, clearly legible and clearly not the
+  same look as the plain white regular-nudge bubble shown alongside it in
+  an earlier screenshot in this same session.
+- A same-text, alert-vs-regular off-screen render pixel-diff: **6,766
+  differing pixels** out of a 200x200 canvas -- confirms the alert styling
+  is a substantial, genuine visual difference, not a subtle tweak that
+  happens to pass eyeballing.
+- The pop-in animation's own effect on the rendered image, verified
+  numerically rather than assumed from reading the code: rendering the
+  same alert bubble at `elapsed=0.0`, `elapsed=0.1`, and `elapsed=0.3`
+  (past the 0.22s pop window, fully settled) showed 5,898 differing
+  pixels between the start and settled frames and 4,656 between the
+  mid-pop and settled frames -- confirms the scale-in genuinely animates
+  rather than being dead code that never actually executes differently
+  frame to frame.
+- **The full real path, end to end**: a real `remind 1s finish the pr
+  review` set through `_dispatch_command`, left to actually become due,
+  fired through the real `_check_reminders()` tick (not a manual
+  `show_nudge` call) -- confirmed `window._nudge_alert` was `True`, the
+  text was correct, and a real screenshot of the result shows exactly the
+  alert-styled bubble described above, produced by the real reminder
+  machinery rather than a hand-constructed test scenario.
+- `pytest -q` -> unchanged at **202/202 passed** (`format_due_reply`'s
+  emoji removal didn't change any existing assertion, since no test
+  checked for the literal emoji character -- only substring/content
+  checks, confirmed by grepping for it in the test file before removing
+  it from the source).
+
+All scratch test scripts' screenshots and any `~/.gitten` test artifacts
+were kept out of the repo (scratchpad-only) and `tasklist` was checked
+clean after every live run.
+
+## 23. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was

@@ -85,6 +85,7 @@ from gitten.visible_windows import get_visible_window_pids
 from gitten.window import (
     INBOX_ACCESS_NOT_GRANTED,
     INBOX_UNAVAILABLE,
+    REMINDER_NUDGE_DURATION_SECONDS,
     WINDOW_SIZE,
     KittenWindow,
     available_geometry,
@@ -544,14 +545,16 @@ class GittenApp:
         reminders from the pending list, persists the change, and shows a
         single reply through the existing nudge bubble -- the plain "due"
         reply for one, or a combined listing if several came due at once
-        (e.g. several piling up during one absence)."""
+        (e.g. several piling up during one absence). Passed through with
+        `alert=True` and the longer `REMINDER_NUDGE_DURATION_SECONDS` --
+        per the design request, a reminder the user explicitly asked for
+        should read as distinctly more of an alert than a routine one-liner/
+        distraction nudge, not just the same bubble with different text."""
         due_ids = {r.id for r in due}
         self.reminders = [r for r in self.reminders if r.id not in due_ids]
         save_reminders(self.reminders, DEFAULT_REMINDERS_PATH)
-        if len(due) == 1:
-            self.window.show_nudge(format_due_reply(due[0]))
-        else:
-            self.window.show_nudge(format_flushed_reminders_reply(due))
+        text = format_due_reply(due[0]) if len(due) == 1 else format_flushed_reminders_reply(due)
+        self.window.show_nudge(text, duration=REMINDER_NUDGE_DURATION_SECONDS, alert=True)
 
     def _check_app_launch(self) -> None:
         """v1.6: piggybacks on the existing ~7s system-status timer rather

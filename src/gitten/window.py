@@ -24,7 +24,7 @@ from gitten.mood import Mood
 from gitten.notifications import NotificationItem
 from gitten.particles import ParticleSystem
 from gitten.seasons import is_night_time
-from gitten.sprite import draw_particles, paint_kitten
+from gitten.sprite import CANVAS, draw_particles, nudge_bubble_size, paint_kitten
 from gitten.status_badge import Badge
 
 WINDOW_SIZE = 130
@@ -34,6 +34,24 @@ TASKBAR_MARGIN = 4
 _DRAG_THRESHOLD = 4
 NUDGE_DURATION_SECONDS = 4.0
 _NUDGE_FADE_SECONDS = 1.0
+# v1.10: reminder-sourced nudges stay up noticeably longer than a routine
+# one-liner/distraction nudge -- the user explicitly asked for this content
+# at a specific time, so it shouldn't flash by at the same brief cadence as
+# ambient personality touches. Long enough to comfortably read even the
+# combined "N reminders came due: ..." flush message.
+REMINDER_NUDGE_DURATION_SECONDS = 9.0
+# v1.10 bugfix: a nudge bubble wider than the plain WINDOW_SIZE-square
+# window would otherwise just get clipped by the widget's own bounds --
+# confirmed with a real screenshot, see DEVELOPMENT_NOTES.md. The window
+# temporarily widens (see _grow_for_nudge) to fit it, capped at this many
+# times the base size so pathologically long input can't produce an
+# absurdly wide window -- generous enough for any reply this codebase
+# actually produces (including the longest existing one, commands.py's
+# COMMANDS_HELP_TEXT).
+_NUDGE_MAX_WIDTH_MULTIPLE = 4
+# A little breathing room past the bubble's own computed edges when sizing
+# the window to fit it.
+_NUDGE_WIDTH_MARGIN = 16.0
 
 # Spawn a drag-trail sparkle roughly every other animation frame, not on
 # every mouseMoveEvent (which can fire far more often than the 30fps repaint
@@ -126,6 +144,8 @@ class KittenWindow(QWidget):
         self._accessory: str | None = None
         self._nudge_text: str | None = None
         self._nudge_started_at: float | None = None
+        self._nudge_duration: float = NUDGE_DURATION_SECONDS
+        self._nudge_alert: bool = False
         self._start_time = time.monotonic()
         self._dragging = False
         self._drag_moved = False
@@ -254,9 +274,19 @@ class KittenWindow(QWidget):
             self._accessory = accessory
             self.update()
 
-    def show_nudge(self, text: str) -> None:
+    def show_nudge(
+        self, text: str, duration: float = NUDGE_DURATION_SECONDS, alert: bool = False
+    ) -> None:
+        """`duration`/`alert` default to the plain routine-nudge look every
+        existing call site already relies on -- v1.10's reminder firing is
+        the one caller that passes `duration=REMINDER_NUDGE_DURATION_SECONDS,
+        alert=True` for a noticeably longer-lived, visually distinct bubble
+        (see `sprite._draw_speech_bubble`)."""
         self._nudge_text = text
         self._nudge_started_at = time.monotonic()
+        self._nudge_duration = duration
+        self._nudge_alert = alert
+        self._grow_for_nudge(text, alert)
 
     @property
     def is_nudging(self) -> bool:
@@ -345,7 +375,22 @@ class KittenWindow(QWidget):
 
     def _on_animation_tick(self) -> None:
         self._step_walk()
+        self._check_nudge_expiry()
         self.update()
+
+    def _check_nudge_expiry(self) -> None:
+        """v1.10 bugfix: nudge-state mutation (clearing the text once its
+        duration elapses, and shrinking the window back down) used to live
+        inside `_nudge_opacity`, called from `paintEvent` -- moved out here
+        so `paintEvent` never resizes the widget mid-paint (risky in Qt) and
+        `_nudge_opacity` can stay a plain, side-effect-free read."""
+        if self._nudge_text is None or self._nudge_started_at is None:
+            return
+        elapsed = time.monotonic() - self._nudge_started_at
+        if elapsed >= self._nudge_duration:
+            self._nudge_text = None
+            self._nudge_started_at = None
+            self._shrink_to_base_size()
 
     # -- v1.7 Part 4: mouse-catch effect ---------------------------------
 
@@ -442,15 +487,61 @@ class KittenWindow(QWidget):
         rect.moveBottomRight(bottom_right)
         self.setGeometry(rect)
 
+    def _resize_anchored_bottom_center(self, new_size: QSize) -> None:
+        """v1.10: the nudge-bubble-width fix's equivalent of
+        `_resize_anchored_bottom_right` above, but anchoring the *bottom
+        center* instead -- the cat itself is always drawn centered
+        horizontally within this window (see paint_kitten's
+        `rect.center()` transform), so growing width-only while keeping the
+        horizontal center and the bottom edge fixed is what lets the window
+        widen to fit a long nudge bubble without the cat's own on-screen
+        position ever visibly shifting. Uses `moveCenter` + `moveBottom`
+        (Qt's own accessors) rather than manual `y + height` arithmetic,
+        the same "avoid the inclusive-bottomRight-off-by-one trap" lesson
+        `_resize_anchored_bottom_right` already relies on -- see the v1.2
+        dev-notes entry for the original bug this pattern avoids."""
+        old_rect = self.geometry()
+        rect = QRect(0, 0, new_size.width(), new_size.height())
+        rect.moveCenter(old_rect.center())
+        rect.moveBottom(old_rect.bottom())
+        self.setGeometry(rect)
+
+    def _grow_for_nudge(self, text: str, alert: bool) -> None:
+        """Called from `show_nudge`: widens the window (height unchanged,
+        so the cat's own drawn size never changes -- paint_kitten scales
+        off `min(width, height)`) just enough to fit `text`'s bubble
+        without it being clipped by the widget's own bounds. A no-op while
+        the inbox view is showing, since nudges never render there anyway
+        (paintEvent returns early for that view) -- avoids fighting
+        `_resize_anchored_bottom_right`'s own geometry management."""
+        if self._view_mode != "pet":
+            return
+        bubble_w, _ = nudge_bubble_size(text, alert)
+        scale = WINDOW_SIZE / CANVAS  # matches paint_kitten's own scale (height is always WINDOW_SIZE)
+        needed_width = (bubble_w + _NUDGE_WIDTH_MARGIN * 2) * scale
+        needed_width = max(WINDOW_SIZE, needed_width)
+        needed_width = min(needed_width, WINDOW_SIZE * _NUDGE_MAX_WIDTH_MULTIPLE)
+        if abs(needed_width - self.width()) > 1:
+            self._resize_anchored_bottom_center(QSize(int(round(needed_width)), WINDOW_SIZE))
+
+    def _shrink_to_base_size(self) -> None:
+        """The other half of `_grow_for_nudge`: called once a nudge
+        actually expires (see `_check_nudge_expiry`), so the window doesn't
+        stay wider than it needs to be once there's nothing left to show."""
+        if self.width() != WINDOW_SIZE or self.height() != WINDOW_SIZE:
+            self._resize_anchored_bottom_center(QSize(WINDOW_SIZE, WINDOW_SIZE))
+
     def _nudge_opacity(self, now: float) -> float:
+        """Pure read of the current nudge fade -- does **not** mutate
+        `_nudge_text`/`_nudge_started_at` itself (that used to happen here,
+        moved to `_check_nudge_expiry` so `paintEvent` never triggers a
+        window resize mid-paint; see the v1.10 bugfix entry)."""
         if self._nudge_text is None or self._nudge_started_at is None:
             return 0.0
         elapsed = now - self._nudge_started_at
-        if elapsed >= NUDGE_DURATION_SECONDS:
-            self._nudge_text = None
-            self._nudge_started_at = None
+        if elapsed >= self._nudge_duration:
             return 0.0
-        remaining = NUDGE_DURATION_SECONDS - elapsed
+        remaining = self._nudge_duration - elapsed
         if remaining >= _NUDGE_FADE_SECONDS:
             return 1.0
         return remaining / _NUDGE_FADE_SECONDS
@@ -462,7 +553,13 @@ class KittenWindow(QWidget):
         rect = QRectF(0, 0, self.width(), self.height())
         now = time.monotonic()
         elapsed = now - self._start_time
+        # Captured before _nudge_opacity() runs, since it clears
+        # _nudge_started_at the instant the nudge expires -- this way the
+        # alert bubble's pop-in animation always sees the real elapsed time
+        # for whatever nudge is (still) actually being shown this frame.
+        nudge_started_at = self._nudge_started_at
         nudge_opacity = self._nudge_opacity(now)
+        nudge_elapsed = max(0.0, now - nudge_started_at) if nudge_started_at is not None else 0.0
 
         # Particles are tracked in *global* screen coordinates (see
         # _maybe_spawn_drag_particle / trigger_shooting_star) so a sparkle
@@ -490,6 +587,8 @@ class KittenWindow(QWidget):
             badge=self._badge,
             nudge_text=self._nudge_text,
             nudge_opacity=nudge_opacity,
+            nudge_elapsed=nudge_elapsed,
+            nudge_alert=self._nudge_alert,
             turn_stage=self._turn_stage if self._attention_state == AttentionState.SULKING else None,
             streak=self._streak,
             focused=self._focused,

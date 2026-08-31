@@ -122,7 +122,12 @@ def format_reminders_list(reminders: list[Reminder], now: float) -> str:
 
 
 def format_due_reply(reminder: Reminder) -> str:
-    return f'⏰ {reminder.message}'
+    # No emoji prefix here (there was one originally) -- the alert bubble
+    # itself now carries a drawn alarm-clock icon (sprite._draw_alarm_icon),
+    # so baking a matching "⏰" glyph into the reply text as well was
+    # visually redundant once that bubble treatment existed. See
+    # DEVELOPMENT_NOTES.md's reminder-alert bugfix/design entry.
+    return reminder.message
 
 
 def format_flushed_reminders_reply(due: list[Reminder]) -> str:
