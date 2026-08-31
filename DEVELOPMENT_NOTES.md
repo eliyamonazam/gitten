@@ -1751,7 +1751,55 @@ All spawned `notepad.exe` processes were terminated by the test script
 itself; confirmed via `tasklist` afterward that no stray notepad or Python
 processes were left behind beyond the two pre-existing ones noted above.
 
-## 17. Working agreement for this project
+## 17. Housekeeping: richer demo image
+
+`assets/preview.png` (the v1 three-mood contact sheet) was the only image
+in the README, and per the housekeeping note in section 15, README.md had
+carried a `<!-- TODO: replace with real screenshot -->` comment above it
+ever since the v1.2-v1.5 README overhaul, since this environment has no
+live-desktop screenshot tooling. Rather than a real screen capture, this
+session generated a new, richer contact sheet the same way `preview.png`
+was originally made: calling `paint_kitten` directly onto an off-screen
+`QPixmap` for each state, then compositing them into one grid image with
+labels -- no live screen capture involved, so the same environment
+limitation that ruled out a real screenshot doesn't apply here at all.
+
+**Six panels**, chosen to show off states from multiple features/versions
+at once rather than just the original three moods: `HAPPY` mood with a low
+battery badge (v1 mood + v1.1 badge, independent layers), a 30-day streak
+crown (v1.4), a birthday party hat (v1.5), the hover-purr face (v1.5), the
+fully-turned-away sulking pose (v1.2), and the new head-tilted curious
+reaction (v1.6, this session's own prior feature).
+
+**A real bug caught while building this, not just cosmetic tuning**:
+generating the first pass with `QT_QPA_PLATFORM=offscreen` (this project's
+usual headless-testing convention) produced every label and every
+`drawText`-based sprite element (the "zzz" idle-mood glyphs) as tofu-box
+placeholders -- the exact "offscreen platform has zero installed fonts"
+issue already recorded in section 12 (v1.4 Feature 3) for the "!" vs "‼"
+glyph swap. That limitation applies to *any* text rendered under the
+offscreen platform, not just that one glyph comparison, and hadn't been hit
+by an actual generated-asset workflow before now. Fixed by generating this
+image with Qt's real default `windows` platform plugin instead (simply not
+setting `QT_QPA_PLATFORM=offscreen`) -- this session has a real interactive
+Windows desktop available (see section 16's testing), so the real platform
+plugin's font database resolved correctly with no visible window ever
+shown, since the script only ever paints onto an in-memory `QPixmap`. Also
+adjusted two panel choices after visually reviewing the first render: the
+streak panel's mood was changed from `IDLE` to `HAPPY` (idle's "zzz" glyphs
+cluttered the crown), and the sulking panel was changed from `turn_stage=2`
+to `turn_stage=0` (stage 2's partial face-reveal is real but too subtle to
+read at this thumbnail size -- stage 0's fully-turned-back pose is
+instantly readable as "sulking" even small).
+
+Saved as `assets/demo.png` (688x538, 6 panels in a 3x2 grid). `README.md`'s
+top image now references it, with the `<!-- TODO -->` comment removed --
+the old `assets/preview.png` file itself was left in place rather than
+deleted, since nothing in this task asked for that and it's still a
+harmless part of the repo's history. Committed separately from any code
+change and pushed to `origin/main`.
+
+## 18. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was

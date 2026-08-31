@@ -5,11 +5,7 @@ repo, reacts to your system and your habits, and has enough of its own
 personality (moods, sulking, purring, random one-liners) that it reads as a
 pet rather than a status bar widget.
 
-<!-- TODO: replace with a real screenshot/recording of the live app (idle
-     pose, a badge, the stats menu open) -- assets/preview.png below is an
-     off-screen render of only the three original v1 moods and predates
-     everything from v1.1 onward (badges, streak, accessories, etc). -->
-![Gitten's three original moods](assets/preview.png)
+![Gitten showing off a battery badge, a 30-day streak crown, a birthday hat, purring, sulking, and noticing a new app](assets/demo.png)
 
 ## Features
 
