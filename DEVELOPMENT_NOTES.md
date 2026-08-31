@@ -1526,7 +1526,84 @@ they're all Qt-wiring/lifecycle issues in `window.py` and `main.py`, tested
 the same ad hoc real-widget way this project's other Qt-only changes
 already are, per the working agreement below).
 
-## 15. Working agreement for this project
+## 15. Housekeeping: README overhaul
+
+Input was `GITTEN_README_UPDATE_BRIEF.md`. The README had only ever
+documented v1 and v1.1 -- everything from v1.2 onward (notification inbox,
+sulking/reconciliation, streak, focus mode, the verified low-battery +
+uncommitted-changes combo, one-liners + the rare shooting star, hover purr,
+double-click high-five, drag sparkle trail, nameable cat, seasonal
+accessories, day/night palette) was undocumented for anyone browsing the
+repo, and the v1.5 bug-fix session (section 14) meant a couple of behaviors
+(the drag trail's actual trailing mechanics, the hover-purr delay) needed
+describing as they now actually work, not as originally specced. Per the
+brief's own instruction, this file was read in full before writing a word
+of the new README, rather than reconstructing behavior from memory of the
+six spec files (which the notes above already show diverged from the
+shipped behavior in several places -- e.g. `QInputDialog.getDate` not
+existing, the tray-menu `QAction` garbage-collection bug).
+
+**Rewrote README.md end to end**, organized per the brief's section list:
+a features list grouped by category (git awareness / system awareness /
+focus & productivity / notifications / personality & interaction /
+personalization) instead of the old flat v1/v1.1-only structure; a
+"How it's built" paragraph surfacing the independent-overlay-layers
+architecture (mood / status badges / distraction-focus / attention-sulking
+/ seasons all knowing nothing about each other, which is what lets several
+of them show at once without special-casing) -- previously this was only
+implicit across several dev-notes sections, never stated as a single
+principle for a reader of the code; a configuration table mapping every
+customizable behavior to where it actually lives (tray prompts +
+`QSettings` vs. the three `~/.gitten/*.json` files, with their real default
+values); and a **regenerated** (not hand-edited) project-structure tree,
+built by actually listing `src/gitten/`, `tests/`, and `scripts/` on disk
+rather than editing the previous tree, since the brief specifically flagged
+that section as having gone stale after past feature rounds (confirmed true
+-- the old tree was still missing `focus.py`, `streak.py`, `particles.py`,
+`seasons.py`, and `oneliners.py`).
+
+**Roadmap rewritten accurately rather than left as the old v1-only list**:
+checked every spec file's own "explicitly deferred" section plus this
+file's record of what actually shipped, rather than assuming. Confirmed via
+grep that v1.3's actual taskbar-chase/favorite-vs-bad reactions were never
+wired into `main.py` (only the standalone connection script and
+`telegram_config.py` exist, per section 10) -- the roadmap now states this
+as "in progress, blocked on the user's own Telegram API credentials"
+instead of listing it as an unstarted future idea. Also carried forward
+from the specs' own deferred sections: pass/fail-aware test/build
+reactions, a full settings UI, live notification updates via WinRT's
+`NotificationChanged` (GITTEN_V1_2_SPEC.md's own "nice-to-have, not
+required" line), GitHub Actions/CI reactions, and decay during an
+interrupted reconciliation (attention.py's own no-decay-while-partial
+design, noted in section 9 as a "deliberate v1.2 simplification" that's
+still true).
+
+**Screenshot**: left the existing `assets/preview.png` (the v1 three-mood
+off-screen render) in place rather than removing it, but added an explicit
+`<!-- TODO: replace with real screenshot -->`-style HTML comment above it
+per the brief's own fallback instruction -- this session has no working
+screenshot/screen-recording tooling for the live desktop app (same
+limitation recorded in section 4: this environment's GDI-based screen
+capture of a layered/topmost window doesn't reliably show the real window
+contents, and no `pyautogui`/`mss`/`pywinauto`-style tooling is installed),
+so capturing a new live screenshot wasn't attempted rather than faked.
+
+**Version bump**: `pyproject.toml` was still at `0.1.0` (not `0.2.0` as the
+brief's phrasing assumed -- checked the file directly rather than trusting
+that detail) despite v1 through v1.5 having shipped under it without ever
+being bumped. Bumped to `0.6.0`, mapping each major version round to one
+minor-version step (v1 -> 0.1, v1.1 -> 0.2, v1.2 -> 0.3, v1.3 (partial) ->
+0.4, v1.4 -> 0.5, v1.5 -> 0.6) as a reasonable, defensible scheme given the
+brief's "use your judgment" instruction, rather than an arbitrary jump.
+
+**Also added `GITTEN_README_UPDATE_BRIEF.md` to version control**, same as
+every other spec/brief file in this repo (see section 11 for the same
+treatment of `GITTEN_V1_4_SPEC.md`).
+
+Committed separately from any code change, per the brief's explicit
+instruction, and pushed to `origin/main`.
+
+## 16. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was
