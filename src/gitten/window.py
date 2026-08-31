@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime
 
@@ -53,6 +54,21 @@ _HIGH_FIVE_DURATION_SECONDS = 1.3
 # launching) stays on screen before self-clearing back to normal.
 _CURIOSITY_DURATION_SECONDS = 2.0
 
+# v1.7 Part 1: autonomous walk. Stepped on the existing ~30fps animation
+# timer (no new timer) -- pixels covered per frame, and how close counts as
+# "arrived" (close enough to snap exactly rather than asymptotically
+# creeping the last fraction of a pixel forever).
+_WALK_STEP_PIXELS = 8.0
+_WALK_ARRIVAL_THRESHOLD_PIXELS = 4.0
+
+# v1.7 Part 4: the little poof of particles at a successful mouse catch --
+# reuses Feature 1's ParticleSystem (v1.5) completely unchanged, just a
+# short-lived burst spawned radiating outward instead of one particle
+# trailing or streaking.
+_CATCH_EFFECT_PARTICLE_COUNT = 10
+_CATCH_EFFECT_LIFESPAN_SECONDS = 0.5
+_CATCH_EFFECT_SPEED_PIXELS_PER_SECOND = 90.0
+
 # Shown in the inbox view for the two distinct "nothing to show" causes the
 # v1.2 spec calls out -- kept as plain strings (not exceptions) so
 # `set_inbox_items` can't be misused to smuggle a real error through.
@@ -71,6 +87,12 @@ class KittenWindow(QWidget):
     # based on the current attention state -- this widget doesn't need to
     # know which.
     plain_clicked = Signal()
+    # Fired when a real user drag interrupts an in-progress walk_to (v1.7
+    # Part 1's "user input always wins over autonomous animation" rule).
+    # main.py listens for this to know a mid-chase drag needs to hide the
+    # now-stranded mouse window rather than leaving it on screen with
+    # nothing chasing it.
+    walk_cancelled = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -96,6 +118,12 @@ class KittenWindow(QWidget):
         self._dragging = False
         self._drag_moved = False
         self._drag_offset = QPoint()
+        # v1.7 Part 1: autonomous walk state. Stepped in _on_animation_tick,
+        # the same ~30fps timer that already drives breathing/tail-sway/
+        # particles -- no second timer.
+        self._walking = False
+        self._walk_target = QPoint()
+        self._walk_on_arrived = None
         self._particles = ParticleSystem()
         self._last_particle_spawn_at = 0.0
         self._hovering = False
@@ -126,7 +154,7 @@ class KittenWindow(QWidget):
         self._turn_stage: int | None = None
 
         self._timer = QTimer(self)
-        self._timer.timeout.connect(self.update)
+        self._timer.timeout.connect(self._on_animation_tick)
         self._timer.start(ANIMATION_INTERVAL_MS)
 
         self._context_menu_requested_callback = None
@@ -246,6 +274,85 @@ class KittenWindow(QWidget):
     def _clear_curiosity(self) -> None:
         self._curious = False
         self.update()
+
+    # -- v1.7 Part 1: autonomous walk ------------------------------------
+
+    def walk_to(self, target_x: int, target_y: int, on_arrived=None) -> None:
+        """Animate the window from wherever it currently is toward
+        (target_x, target_y), a few pixels per animation frame -- stepped in
+        `_on_animation_tick`, the same ~30fps timer that already drives
+        breathing/tail-sway/particles, not a second one. Once within
+        `_WALK_ARRIVAL_THRESHOLD_PIXELS`, snaps exactly to the target and
+        calls `on_arrived` (if given) once.
+
+        A real user drag always cancels an in-progress walk -- see
+        `cancel_walk`, called from `mousePressEvent` -- since user input
+        should always win over an autonomous animation."""
+        self._walk_target = QPoint(int(target_x), int(target_y))
+        self._walk_on_arrived = on_arrived
+        self._walking = True
+
+    def cancel_walk(self) -> None:
+        was_walking = self._walking
+        self._walking = False
+        self._walk_on_arrived = None
+        if was_walking:
+            self.walk_cancelled.emit()
+
+    @property
+    def is_walking(self) -> bool:
+        return self._walking
+
+    @property
+    def is_dragging(self) -> bool:
+        return self._dragging
+
+    def _step_walk(self) -> None:
+        if not self._walking:
+            return
+        current = self.pos()
+        dx = self._walk_target.x() - current.x()
+        dy = self._walk_target.y() - current.y()
+        distance = math.hypot(dx, dy)
+        if distance <= _WALK_ARRIVAL_THRESHOLD_PIXELS:
+            self.move(self._walk_target)
+            self._walking = False
+            callback = self._walk_on_arrived
+            self._walk_on_arrived = None
+            if callback is not None:
+                callback()
+            return
+        step = min(_WALK_STEP_PIXELS, distance)
+        ratio = step / distance
+        self.move(QPoint(round(current.x() + dx * ratio), round(current.y() + dy * ratio)))
+
+    def _on_animation_tick(self) -> None:
+        self._step_walk()
+        self.update()
+
+    # -- v1.7 Part 4: mouse-catch effect ---------------------------------
+
+    def trigger_catch_effect(self) -> None:
+        """A little poof/burst of particles at the cat's current position --
+        reuses Feature 1's ParticleSystem (v1.5) completely unchanged, same
+        as the drag trail and shooting star, just spawned as a short-lived
+        burst radiating outward instead of one trailing/streaking particle.
+        Played by `main.py` when the v1.7 mouse-chase minigame catches its
+        target."""
+        now = time.monotonic()
+        origin = self.mapToGlobal(QPoint(self.width() // 2, self.height() // 2))
+        for i in range(_CATCH_EFFECT_PARTICLE_COUNT):
+            angle = 2 * math.pi * i / _CATCH_EFFECT_PARTICLE_COUNT
+            dx = _CATCH_EFFECT_SPEED_PIXELS_PER_SECOND * math.cos(angle)
+            dy = _CATCH_EFFECT_SPEED_PIXELS_PER_SECOND * math.sin(angle)
+            self._particles.spawn_particle(
+                float(origin.x()),
+                float(origin.y()),
+                now,
+                lifespan=_CATCH_EFFECT_LIFESPAN_SECONDS,
+                dx=dx,
+                dy=dy,
+            )
 
     def set_context_menu_callback(self, callback) -> None:
         self._context_menu_requested_callback = callback
@@ -389,6 +496,7 @@ class KittenWindow(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.interacted.emit()
         if event.button() == Qt.LeftButton:
+            self.cancel_walk()
             self._dragging = True
             self._drag_moved = False
             self._drag_offset = event.globalPosition().toPoint() - self.pos()

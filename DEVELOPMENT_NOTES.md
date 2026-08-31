@@ -1799,7 +1799,59 @@ deleted, since nothing in this task asked for that and it's still a
 harmless part of the repo's history. Committed separately from any code
 change and pushed to `origin/main`.
 
-## 18. Working agreement for this project
+## 18. v1.7 -- mouse chase minigame
+
+Input is `GITTEN_V1_7_SPEC.md`, the biggest feature to date: the cat moves
+autonomously across the screen and a second small entity (a mouse) exists
+elsewhere on screen at the same time. The spec explicitly called for
+building and verifying each part in isolation before wiring them together,
+and this section is written in that same order as the work actually
+happened, not collapsed after the fact.
+
+### Part 1: Autonomous walk (`window.py`), built and verified alone first
+
+`walk_to(target_x, target_y, on_arrived=None)` records a target point and
+sets a `_walking` flag; the actual per-frame movement is stepped from
+`_on_animation_tick` -- the existing ~30fps `QTimer` that already drives
+breathing/tail-sway/particles was repurposed (it previously just called
+`self.update()` directly; now it calls a new `_step_walk()` first) rather
+than adding a second timer, exactly per the spec. `_step_walk` moves the
+window `_WALK_STEP_PIXELS` (8px) toward the target each frame using
+`math.hypot` for the remaining distance, and once within
+`_WALK_ARRIVAL_THRESHOLD_PIXELS` (4px) snaps exactly to the integer target
+coordinate and fires `on_arrived` exactly once (the callback reference is
+cleared before invoking it, so it can never double-fire even if something
+re-enters).
+
+**Drag-wins rule**: `cancel_walk()` clears `_walking` and, if a walk was
+actually in progress, emits a new `walk_cancelled` signal --
+`mousePressEvent`'s left-button branch calls `cancel_walk()` before
+starting the drag, so a real user drag always immediately interrupts an
+autonomous walk. `walk_cancelled` (rather than reusing the existing
+`interacted` signal, which fires on *any* press including right-clicks) is
+deliberately scoped to "a walk that was actually cancelled," which is
+exactly what v1.7 Part 4's mid-chase-drag handling needs to know about
+without also having to filter out right-clicks itself.
+
+**Tested live, in complete isolation, before Part 2 existed at all**: a
+real `KittenWindow`, a real `QApplication` event loop pumped with
+`app.processEvents()` over real elapsed time (not an injected fake clock --
+there's nothing to inject here, `_step_walk` only cares about the window's
+actual current `pos()`), confirming (1) `walk_to` genuinely converges frame
+by frame to an exact target and `on_arrived` fires exactly once and never
+again afterward; (2) a real synthetic left-button `mousePressEvent` sent
+mid-walk (confirmed via a few real ticks having already moved it off its
+start position) cancels the walk immediately, fires `walk_cancelled`
+exactly once, and the window genuinely stops moving on subsequent ticks;
+(3) a real right-button press does *not* cancel an in-progress walk (proof
+that `walk_cancelled` is correctly scoped to drags, not "any interaction").
+`pytest -q` re-run after this part: unchanged at **122/122 passed** (Qt
+wiring only, no new pure-logic module yet).
+
+(Parts 2-4 continue in the sections below, added as each was actually
+built and verified.)
+
+## 19. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was
