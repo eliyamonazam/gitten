@@ -29,18 +29,25 @@ def random_spawn_interval_seconds(
 
 
 def should_spawn_mouse(
-    view_mode: str, is_sulking: bool, is_chasing: bool, is_dragging: bool
+    view_mode: str,
+    is_sulking: bool,
+    is_chasing: bool,
+    is_dragging: bool,
+    is_away: bool = False,
 ) -> bool:
     """Whether now is a good moment to spawn the mouse: the cat must be in
     its normal "pet" view -- not sulking, not already showing the
-    notification inbox, not already mid-chase, and not while the user is
-    actively dragging the cat around. If not, the caller should skip this
-    occurrence and reschedule rather than interrupting or double-spawning."""
+    notification inbox, not already mid-chase, not while the user is
+    actively dragging the cat around, and (v1.8) not while the user is away
+    from the keyboard/mouse -- spawning a minigame nobody is there to play
+    is pointless. If not, the caller should skip this occurrence and
+    reschedule rather than interrupting or double-spawning."""
     return (
         view_mode == "pet"
         and not is_sulking
         and not is_chasing
         and not is_dragging
+        and not is_away
     )
 
 

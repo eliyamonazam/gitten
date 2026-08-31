@@ -64,8 +64,16 @@ def test_skips_when_in_inbox_view():
     assert should_show_oneliner("inbox", is_sulking=False, is_nudging=False) is False
 
 
+def test_skips_when_away():
+    assert (
+        should_show_oneliner("pet", is_sulking=False, is_nudging=False, is_away=True) is False
+    )
+
+
 def test_skips_when_everything_is_going_on_at_once():
-    assert should_show_oneliner("inbox", is_sulking=True, is_nudging=True) is False
+    assert (
+        should_show_oneliner("inbox", is_sulking=True, is_nudging=True, is_away=True) is False
+    )
 
 
 # -- should_show_rare_event -----------------------------------------------------

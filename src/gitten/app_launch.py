@@ -16,6 +16,7 @@ def should_react_to_new_launch(
     last_reaction_at: float | None,
     now: float,
     cooldown: float = DEFAULT_COOLDOWN_SECONDS,
+    is_away: bool = False,
 ) -> bool:
     """True if at least one process with a visible, titled window appeared
     since the previous poll, and the cooldown since the last reaction has
@@ -28,7 +29,13 @@ def should_react_to_new_launch(
     `previous_pids` as an empty set before the first poll and simply record
     whatever `current_pids` was afterward, win or lose, so the *next* poll
     has a real baseline to compare against.
+
+    (v1.8) `is_away` suppresses the reaction entirely -- reacting with
+    curiosity to something new when nobody is there to see it is pointless,
+    same reasoning as the other two suppressed behaviors.
     """
+    if is_away:
+        return False
     if not previous_pids:
         return False
     if not (current_pids - previous_pids):

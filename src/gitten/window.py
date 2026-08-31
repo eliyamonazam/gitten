@@ -122,6 +122,7 @@ class KittenWindow(QWidget):
         self._badge = Badge.NONE
         self._streak = 0
         self._focused = False
+        self._away = False
         self._accessory: str | None = None
         self._nudge_text: str | None = None
         self._nudge_started_at: float | None = None
@@ -241,6 +242,11 @@ class KittenWindow(QWidget):
     def set_focused(self, focused: bool) -> None:
         if focused != self._focused:
             self._focused = focused
+            self.update()
+
+    def set_away(self, away: bool) -> None:
+        if away != self._away:
+            self._away = away
             self.update()
 
     def set_accessory(self, accessory: str | None) -> None:
@@ -492,6 +498,7 @@ class KittenWindow(QWidget):
             accessory=self._accessory,
             night=is_night_time(datetime.now().hour),
             curious=self._curious,
+            away=self._away,
         )
 
     def enterEvent(self, event) -> None:

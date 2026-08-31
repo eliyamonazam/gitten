@@ -67,6 +67,7 @@ def paint_kitten(
     accessory: str | None = None,
     night: bool = False,
     curious: bool = False,
+    away: bool = False,
 ) -> None:
     painter.save()
     painter.setRenderHint(QPainter.Antialiasing, True)
@@ -78,9 +79,20 @@ def paint_kitten(
     painter.translate(-CANVAS / 2, -CANVAS / 2)
 
     breathe = 1.0 + 0.018 * math.sin(t * 2.0)
+    # v1.8: the AWAY "deep sleep" pose breathes noticeably slower and deeper
+    # than the regular idle breathing above -- the spec's explicit ask for
+    # something "visibly different from regular idle side by side, the same
+    # bar already applied to distinguishing focused from curious."
+    away_breathe = 1.0 + 0.05 * math.sin(t * 0.7)
     bob = 1.5 * math.sin(t * 2.0) if not dragging else 0.0
     tail_phase = math.sin(t * 1.6) * 0.5 + math.sin(t * 0.7) * 0.2
-    jitter_x = 0.6 * math.sin(t * 14.0) if mood == Mood.WAITING else 0.0
+    # The WAITING mood's nervous shiver is itself a mood reaction, so it
+    # must not leak through while AWAY -- the whole point of the override
+    # below is that the pose becomes mood-independent. Caught concretely by
+    # this feature's own pixel-diff verification (see DEVELOPMENT_NOTES.md):
+    # an early version diffed non-zero between an away-IDLE and away-WAITING
+    # render because this line ignored `away`.
+    jitter_x = 0.6 * math.sin(t * 14.0) if mood == Mood.WAITING and not away else 0.0
 
     center = QPointF(CENTER.x() + jitter_x, CENTER.y() + bob)
 
@@ -106,13 +118,46 @@ def paint_kitten(
     # `paintEvent` already returns early without calling `paint_kitten` at
     # all while the inbox view is showing, so it's already guaranteed true
     # by the time this function runs.)
-    show_purr = hovering and turn_stage is None
-    show_curious = curious and turn_stage is None and not show_purr
-    show_focused = focused and turn_stage is None and not show_purr and not show_curious
+    #
+    # v1.8: AWAY (real system-wide keyboard/mouse idle, distinct from the
+    # git-driven IDLE mood) sits above *all* of the above, as a full
+    # override rather than another layer -- decided (not just reasoned
+    # about) because the whole point of this state is "nobody is here to
+    # see any of this": a sulking cat has no one to perform sulking at, a
+    # hover/curious/focused reaction has no one to perform for, and none of
+    # those poses are even reachable in practice while genuinely away (they
+    # all require live mouse/keyboard input or an active process check that
+    # v1.8's own suppression already gates out). So while away, the cat
+    # always lies down and sleeps regardless of mood/sulk/reaction state,
+    # exactly like v1.6's curious-vs-focused decision was verified with a
+    # concrete pixel-diff rather than left as reasoning alone -- see
+    # DEVELOPMENT_NOTES.md for that diff.
+    show_away = away
+    show_purr = hovering and turn_stage is None and not show_away
+    show_curious = curious and turn_stage is None and not show_purr and not show_away
+    show_focused = (
+        focused
+        and turn_stage is None
+        and not show_purr
+        and not show_curious
+        and not show_away
+    )
 
     _draw_shadow(painter, center)
-    _draw_tail(painter, center, tail_phase)
-    if show_curious:
+    # The curled AWAY tail is drawn after the (wider, flattened) lying body
+    # rather than before it, unlike the regular swaying tail -- otherwise
+    # the lying body's wider footprint completely covers it, since it's
+    # tucked in close. Caught by looking at an actual rendered image (not
+    # just the pixel-diff counts, which only check for *some* difference,
+    # not that the difference looks right) -- see DEVELOPMENT_NOTES.md.
+    if not show_away:
+        _draw_tail(painter, center, tail_phase)
+    if show_away:
+        # Ears relax and splay outward/down instead of the default upright
+        # posture -- paired with the lying-down body below, this is the
+        # other half of "visibly different from regular idle."
+        _draw_ears(painter, center, breathe, drooping=True, t=t)
+    elif show_curious:
         # A brief head-tilt (ears + face rotated together around the head's
         # own center, body/tail left alone) is what makes "curious" read as
         # "noticing something new" rather than a near-duplicate of
@@ -121,8 +166,13 @@ def paint_kitten(
             _draw_ears(painter, center, breathe, perked=True, wiggle=False, t=t)
     else:
         _draw_ears(painter, center, breathe, perked=show_focused, wiggle=show_purr, t=t)
-    _draw_body(painter, center, breathe, night=night)
-    if turn_stage is not None:
+    _draw_body(
+        painter, center, away_breathe if show_away else breathe, night=night, lying=show_away
+    )
+    if show_away:
+        _draw_tail(painter, center, tail_phase, curled=True)
+        _draw_sleep_face(painter, center, t)
+    elif turn_stage is not None:
         _draw_face_turned(painter, center, turn_stage, t)
     elif show_purr:
         _draw_purr_face(painter, center, t)
@@ -135,6 +185,13 @@ def paint_kitten(
         _draw_face(painter, center, mood, t)
         urgent = badge in (Badge.LOW_BATTERY, Badge.CRITICAL_BATTERY)
         _draw_mood_overlay(painter, center, mood, t, urgent=urgent)
+
+    if show_away:
+        # A bigger, slower-drifting "zzz" than the regular IDLE mood
+        # overlay -- reused (not reinvented) via the `deep` flag, played
+        # unconditionally regardless of the git-driven mood underneath,
+        # per the override decision above.
+        _draw_zzz(painter, center, t, deep=True)
 
     if accessory is not None:
         _draw_accessory(painter, center, accessory, t)
@@ -168,17 +225,27 @@ def _draw_shadow(painter: QPainter, center: QPointF) -> None:
     painter.restore()
 
 
-def _draw_tail(painter: QPainter, center: QPointF, phase: float) -> None:
+def _draw_tail(painter: QPainter, center: QPointF, phase: float, curled: bool = False) -> None:
     painter.save()
     pen = _outline_pen(9.0)
     pen.setColor(BODY_COLOR)
     painter.setPen(pen)
 
-    base = QPointF(center.x() + BODY_RX * 0.75, center.y() + BODY_RY * 0.55)
-    sway = 14.0 * phase
-    c1 = QPointF(base.x() + 22, base.y() + 6 + sway * 0.4)
-    c2 = QPointF(base.x() + 26, base.y() - 20 + sway)
-    end = QPointF(base.x() + 14, base.y() - 34 + sway * 1.3)
+    if curled:
+        # Tucked in close to the body in a small curled loop instead of
+        # swaying -- reads as "settled down to sleep" rather than
+        # alert/active (v1.8 AWAY pose). Anchored a bit closer to center
+        # than the regular base since the lying-down body is flatter/wider.
+        base = QPointF(center.x() + BODY_RX * 0.55, center.y() + BODY_RY * 0.25)
+        c1 = QPointF(base.x() + 12, base.y() + 2)
+        c2 = QPointF(base.x() + 8, base.y() - 12)
+        end = QPointF(base.x() - 4, base.y() - 8)
+    else:
+        base = QPointF(center.x() + BODY_RX * 0.75, center.y() + BODY_RY * 0.55)
+        sway = 14.0 * phase
+        c1 = QPointF(base.x() + 22, base.y() + 6 + sway * 0.4)
+        c2 = QPointF(base.x() + 26, base.y() - 20 + sway)
+        end = QPointF(base.x() + 14, base.y() - 34 + sway * 1.3)
 
     path = QPainterPath(base)
     path.cubicTo(c1, c2, end)
@@ -199,13 +266,17 @@ def _draw_ears(
     perked: bool = False,
     wiggle: bool = False,
     t: float = 0.0,
+    drooping: bool = False,
 ) -> None:
     painter.save()
     painter.setPen(_outline_pen())
     # "Perked" (focus reaction): ears stand taller and lean in toward the
     # center, an alert/attentive posture, instead of the normal relaxed angle.
-    height_scale = 1.3 if perked else 1.0
-    lean = 0.5 if perked else 1.0
+    # "Drooping" (v1.8 AWAY pose): the opposite extreme -- flattened and
+    # splayed further outward, a relaxed/asleep posture, distinct from both
+    # the perked and the default resting angle.
+    height_scale = 1.3 if perked else (0.4 if drooping else 1.0)
+    lean = 0.5 if perked else (1.6 if drooping else 1.0)
     # "Wiggle" (purr reaction): a slow, gentle side-to-side sway on the ear
     # tips -- the same sine-wave idiom already used for breathing/tail sway,
     # applied here instead of a static lean.
@@ -256,9 +327,17 @@ def _blend_color(a: QColor, b: QColor, factor: float) -> QColor:
     )
 
 
-def _draw_body(painter: QPainter, center: QPointF, breathe: float, night: bool = False) -> None:
+def _draw_body(
+    painter: QPainter, center: QPointF, breathe: float, night: bool = False, lying: bool = False
+) -> None:
     painter.save()
-    rect = QRectF(0, 0, BODY_RX * 2, BODY_RY * 2 * breathe)
+    # v1.8 AWAY pose: "the cat lies down rather than sits" -- a noticeably
+    # wider, flatter ellipse instead of the regular upright oval, the main
+    # thing that makes this pose read as visibly different from IDLE at a
+    # glance rather than a near-duplicate with a different face.
+    rx = BODY_RX * 1.4 if lying else BODY_RX
+    ry = BODY_RY * 0.55 if lying else BODY_RY
+    rect = QRectF(0, 0, rx * 2, ry * 2 * breathe)
     rect.moveCenter(center)
 
     if night:
@@ -416,6 +495,27 @@ def _draw_focused_face(painter: QPainter, center: QPointF, t: float) -> None:
     painter.restore()
 
 
+def _draw_sleep_face(painter: QPainter, center: QPointF, t: float) -> None:
+    """The v1.8 AWAY "deep sleep" face: fully flat, straight closed-eye
+    lines -- distinct from IDLE's light-doze downward-curving eyes (a
+    curve reads as a relaxed blink; a flat line reads as properly shut) --
+    and a tiny closed mouth. Paired with the lying-down body, the drooping
+    ears, and the bigger/slower zzz drift, this is meant to be unmistakably
+    different from regular IDLE at a glance, not just a relabeled version of
+    it."""
+    painter.save()
+    pen = _outline_pen(2.0)
+    painter.setPen(pen)
+    eye_y = center.y() - 1
+    for side in (-1, 1):
+        ex = center.x() + side * 11
+        painter.drawLine(QPointF(ex - 5, eye_y), QPointF(ex + 5, eye_y))
+
+    mouth_y = center.y() + 7
+    painter.drawLine(QPointF(center.x() - 2, mouth_y), QPointF(center.x() + 2, mouth_y))
+    painter.restore()
+
+
 # "Curious" (v1.6): a new program was just detected launching. Perked ears
 # like "focused", but rotated together with the face around the head's own
 # center -- a head-tilt -- which is what actually keeps this from reading as
@@ -525,20 +625,28 @@ def _draw_mood_overlay(
         _draw_exclaim_bubble(painter, center, t, urgent=urgent)
 
 
-def _draw_zzz(painter: QPainter, center: QPointF, t: float) -> None:
+def _draw_zzz(painter: QPainter, center: QPointF, t: float, deep: bool = False) -> None:
     painter.save()
     font = QFont("Comic Sans MS", 10)
     font.setItalic(True)
     painter.setFont(font)
 
-    top = QPointF(center.x() + BODY_RX * 0.5, center.y() - BODY_RY * 1.35)
+    # v1.8 AWAY pose: a noticeably slower drift and bigger letters than the
+    # regular IDLE mood's zzz -- "a slower/deeper version of the existing
+    # breathing sine-wave" extended to this overlay too, and positioned
+    # lower to sit above the flatter lying-down body instead of the taller
+    # sitting one.
+    drift_speed = 0.28 if deep else 0.5
+    rise_amount = 22.0 if deep else 16.0
+    size_bonus = 3 if deep else 0
+    top_y_factor = 1.05 if deep else 1.35
+    top = QPointF(center.x() + BODY_RX * 0.5, center.y() - BODY_RY * top_y_factor)
     letters = "zzz"
     for i, ch in enumerate(letters):
-        cycle = 3.0
-        phase = (t * 0.5 + i * 0.33) % 1.0
-        rise = phase * 16.0
+        phase = (t * drift_speed + i * 0.33) % 1.0
+        rise = phase * rise_amount
         alpha = int(220 * (1.0 - phase))
-        size = 7 + i * 2
+        size = 7 + i * 2 + size_bonus
         f = QFont(font)
         f.setPointSizeF(size)
         painter.setFont(f)

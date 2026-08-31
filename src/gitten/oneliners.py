@@ -49,12 +49,17 @@ def pick_oneliner(rng: random.Random | None = None) -> str:
     return r.choice(ONELINERS)
 
 
-def should_show_oneliner(view_mode: str, is_sulking: bool, is_nudging: bool) -> bool:
-    """Whether now is a good moment to show a one-liner: the cat must be in
-    its normal idle "pet" view -- not sulking, not already showing another
-    nudge, not in the notification inbox view. If not, the caller should
-    skip this occurrence and reschedule rather than interrupting."""
-    return view_mode == "pet" and not is_sulking and not is_nudging
+def should_show_oneliner(
+    view_mode: str, is_sulking: bool, is_nudging: bool, is_away: bool = False
+) -> bool:
+    """Whether now is a good moment to show a one-liner (or, per the same
+    gate, the rare shooting-star roll instead): the cat must be in its
+    normal idle "pet" view -- not sulking, not already showing another
+    nudge, not in the notification inbox view, and (v1.8) not while the
+    user is away from the keyboard/mouse -- a cute line nobody is there to
+    read is pointless. If not, the caller should skip this occurrence and
+    reschedule rather than interrupting."""
+    return view_mode == "pet" and not is_sulking and not is_nudging and not is_away
 
 
 DEFAULT_RARE_EVENT_PROBABILITY = 0.05

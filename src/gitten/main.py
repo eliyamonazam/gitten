@@ -49,6 +49,7 @@ from gitten.oneliners import (
 from gitten.seasons import seasonal_accessory
 from gitten.sprite import paint_kitten
 from gitten.status_badge import StatusBadgeTracker
+from gitten.system_idle import get_idle_seconds, is_away
 from gitten.system_monitor import is_focus_process_running, sample_system
 from gitten.visible_windows import get_visible_window_pids
 from gitten.window import (
@@ -67,6 +68,14 @@ ATTENTION_TICK_INTERVAL_MS = 5000
 FOCUS_POLL_INTERVAL_MS = 5000
 NUDGE_MESSAGE = "یه وقفه کوتاه چطوره؟"
 DEFAULT_CAT_NAME = "Gitten"
+
+# v1.8: how long a real absence (system-wide keyboard/mouse idle, not the
+# git-driven idle mood) has to have lasted, once the user comes back, before
+# it's worth a small "welcome back" bubble -- deliberately a much longer bar
+# than the away threshold itself (10 minutes) so a routine short break
+# doesn't get greeted every time.
+WELCOME_BACK_THRESHOLD_SECONDS = 1800.0  # 30 minutes
+WELCOME_BACK_MESSAGE = "خوش برگشتی 🙂"
 
 
 def _fetch_inbox_snapshot():
@@ -131,6 +140,15 @@ class GittenApp:
         # permanently disturbing its saved/anchored position).
         self._is_chasing = False
         self._chase_start_pos = None
+        # v1.8 real idle/away detection state: the current away flag (fed
+        # into the three suppression gates below) and the monotonic
+        # timestamp the current absence actually began -- computed as
+        # "now minus however idle the very first away-poll already found
+        # the system," not just the poll time, so the welcome-back check
+        # measures the real absence length rather than undercounting it by
+        # up to one system-tick interval.
+        self._is_away = False
+        self._away_since: float | None = None
         self.watcher = GitWatcher()
         self.window = KittenWindow()
         self.window.set_context_menu_callback(self._show_context_menu)
@@ -386,7 +404,32 @@ class GittenApp:
             disk_percent=sample.disk_percent,
         )
         self.window.set_badge(badge)
+        self._check_idle()
         self._check_app_launch()
+
+    def _check_idle(self) -> None:
+        """v1.8: real system-wide keyboard/mouse idle detection, piggybacked
+        on the existing ~7s system-status timer rather than a new one, per
+        the spec. Drives both the AWAY sleep pose (via `window.set_away`)
+        and, on the away->active transition after a long-enough absence, the
+        welcome-back nudge."""
+        idle_seconds = get_idle_seconds()
+        now = time.monotonic()
+        away_now = is_away(idle_seconds)
+
+        if away_now and not self._is_away:
+            # Just went away -- the absence actually started `idle_seconds`
+            # ago, not just now, so anchor `_away_since` to that real start
+            # time rather than the poll time.
+            self._away_since = now - idle_seconds
+        elif not away_now and self._is_away and self._away_since is not None:
+            absence = now - self._away_since
+            if absence >= WELCOME_BACK_THRESHOLD_SECONDS and self.window.view_mode == "pet":
+                self.window.show_nudge(WELCOME_BACK_MESSAGE)
+            self._away_since = None
+
+        self._is_away = away_now
+        self.window.set_away(away_now)
 
     def _check_app_launch(self) -> None:
         """v1.6: piggybacks on the existing ~7s system-status timer rather
@@ -399,6 +442,7 @@ class GittenApp:
             self._last_curiosity_reaction_at,
             now,
             cooldown=DEFAULT_COOLDOWN_SECONDS,
+            is_away=self._is_away,
         ):
             self._last_curiosity_reaction_at = now
             self.window.trigger_curiosity()
@@ -454,7 +498,9 @@ class GittenApp:
         that check here too once they are.) Otherwise this occurrence is
         silently skipped and the next one is rescheduled regardless."""
         is_sulking = self.attention_tracker.state == AttentionState.SULKING
-        if should_show_oneliner(self.window.view_mode, is_sulking, self.window.is_nudging):
+        if should_show_oneliner(
+            self.window.view_mode, is_sulking, self.window.is_nudging, is_away=self._is_away
+        ):
             if should_show_rare_event():
                 self.window.trigger_shooting_star()
             else:
@@ -472,7 +518,11 @@ class GittenApp:
         "always reschedule" pattern as _on_oneliner_timer."""
         is_sulking = self.attention_tracker.state == AttentionState.SULKING
         if should_spawn_mouse(
-            self.window.view_mode, is_sulking, self._is_chasing, self.window.is_dragging
+            self.window.view_mode,
+            is_sulking,
+            self._is_chasing,
+            self.window.is_dragging,
+            is_away=self._is_away,
         ):
             self._start_mouse_chase()
         self._schedule_next_mouse_spawn()

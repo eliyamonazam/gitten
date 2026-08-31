@@ -55,8 +55,22 @@ def test_skips_when_dragging():
     assert should_spawn_mouse("pet", is_sulking=False, is_chasing=False, is_dragging=True) is False
 
 
+def test_skips_when_away():
+    assert (
+        should_spawn_mouse(
+            "pet", is_sulking=False, is_chasing=False, is_dragging=False, is_away=True
+        )
+        is False
+    )
+
+
 def test_skips_when_everything_is_going_on_at_once():
-    assert should_spawn_mouse("inbox", is_sulking=True, is_chasing=True, is_dragging=True) is False
+    assert (
+        should_spawn_mouse(
+            "inbox", is_sulking=True, is_chasing=True, is_dragging=True, is_away=True
+        )
+        is False
+    )
 
 
 # -- pick_spawn_position -------------------------------------------------------

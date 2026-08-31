@@ -2016,7 +2016,258 @@ for every Qt-facing part, per the spec's explicit instruction not to trust
 off-screen reasoning alone), and documented in the order they were
 actually built.
 
-## 19. Working agreement for this project
+## 19. v1.8 -- real keyboard/mouse idle detection
+
+Input is `GITTEN_V1_8_SPEC.md`. This adds a second, independent "presence"
+signal -- real system-wide keyboard/mouse inactivity via the Windows
+`GetLastInputInfo` API -- distinct from the existing git-driven `idle`
+*mood*, which only means "no git activity for a while" and says nothing
+about whether anyone is actually sitting at the computer. The spec was
+explicit that the real payoff here is the *suppression* wiring (three
+already-built features going quiet while nobody's there to see them), not
+just the new sleep pose, and this session treated it that way.
+
+### `system_idle.py` -- the I/O boundary + the one pure decision
+
+New module, same "thin wrapper, no decision logic" discipline as
+`system_monitor.py` / `foreground_window.py`: `get_idle_seconds()` calls
+`user32.GetLastInputInfo` via `ctypes` (no `pywin32` needed for this one --
+it's not exposed there) to get the last-input tick count, and diffs it
+against `kernel32.GetTickCount64()` -- **`GetTickCount64`, not the 32-bit
+`GetTickCount`**, a deliberate choice to avoid the well-known ~49.7-day
+wraparound bug the 32-bit counter has, even though it wasn't something the
+spec called out explicitly. Returns `0.0` (i.e. "not idle") on any failure
+rather than raising, matching every other win32-touching module's
+degrade-gracefully discipline.
+
+`is_away(idle_seconds, threshold_seconds=600.0) -> bool` lives in the same
+file rather than a separate module the way `app_launch.py` is split from
+`visible_windows.py` -- that split exists because `app_launch.py` grew real
+branching logic worth isolating and testing on its own; `is_away` is a
+single threshold comparison, so a second file would be pure overhead here.
+It stays a plain binary gate (not graduated idle levels) per the spec's own
+explicit steer, matching this codebase's other binary state gates (sulking,
+focus), which have worked fine without more granularity.
+
+### The AWAY "deep sleep" pose (`sprite.py`)
+
+`paint_kitten` gained an additive `away: bool = False` parameter (default
+unchanged, every existing call site unaffected, same pattern every prior
+feature's new parameter has used). Distinguishing it concretely from the
+existing git-driven IDLE pose, per the same bar v1.6 held itself to for
+curious-vs-focused:
+
+- **Body lies down instead of sitting** -- `_draw_body` gained a `lying`
+  flag that widens the ellipse to 1.4x its normal horizontal radius and
+  flattens it to 0.55x its normal vertical radius, instead of the regular
+  upright oval. This is the single biggest visual differentiator and the
+  main reason the pixel-diff below shows such a large count.
+- **A slower, deeper breathing wave** -- a second sine (`away_breathe`, at
+  `t * 0.7` with 0.05 amplitude) replaces the regular `t * 2.0` / 0.018
+  breathing, per the spec's explicit "slower/deeper version of the existing
+  breathing sine-wave" ask.
+- **Ears droop** -- `_draw_ears` gained a `drooping` flag (height scaled to
+  0.4x, leaning outward at 1.6x instead of the default 1.0x), the opposite
+  extreme from the existing `perked` flag used by focus/curiosity.
+- **Tail curls in** instead of swaying -- `_draw_tail` gained a `curled`
+  flag that draws a small tucked loop near the body instead of the long
+  swaying Bézier. Deliberately drawn *after* the (now much wider) lying
+  body rather than before it, unlike the regular tail -- an early version
+  drew it first and the wider body's footprint completely covered it, only
+  caught by actually looking at a rendered image (see Testing below), not
+  just the pixel-diff counts, which only prove *some* difference exists,
+  not that it looks right.
+- **A new `_draw_sleep_face`**: flat, straight closed-eye lines (distinct
+  from IDLE's downward-curving light-doze eyes -- a curve reads as a
+  relaxed blink, a flat line reads as properly shut) and a tiny closed
+  mouth.
+- **A bigger, slower zzz** -- `_draw_zzz` gained a `deep` flag: slower
+  drift speed (0.28x vs 0.5x), taller rise (22px vs 16px), and larger
+  letters (+3pt), positioned lower to sit over the flatter lying body
+  instead of the taller sitting one.
+
+### Precedence: AWAY fully overrides mood/reaction display
+
+**Decided, not just assumed, per the spec's explicit instruction**: AWAY
+sits above *every* other layer in the face/pose precedence chain (sulking,
+purr, curious, focused, and the git-driven mood face itself) as a full
+override, not another layer alongside them. Reasoning: the whole point of
+this state is "nobody is here to see any of this" -- a sulking cat has no
+one to perform sulking at, a purr/curious/focused reaction has no one to
+perform for, and a fresh "!" or heart from the git mood is equally
+pointless with no audience. Practically, none of those other reactions are
+even reachable while genuinely away anyway (they all require live
+mouse/keyboard input or a process check that v1.8's own suppression already
+gates out), so the override mostly just guarantees consistency rather than
+fighting anything.
+
+**Verified concretely with a pixel-diff, the same standard held for v1.5's
+purr-vs-focused and v1.6's curious-vs-focused decisions**, not left as
+reasoning alone (`away vs idle`, `away+turn_stage` vs `away`-alone and vs
+`turn_stage`-alone, `away+hovering`, `away+curious`, `away+focused`, and
+`away` under `IDLE` vs `HAPPY` vs `WAITING` moods, all off-screen via
+`QPixmap`):
+
+```
+away vs idle (should differ a LOT):                          5940
+away+turn_stage vs away-alone (expect 0, full override):         0
+away+turn_stage vs turn_stage-alone (expect >0, proves override): 5835
+away+hovering vs away-alone (expect 0):                           0
+away+hovering vs hovering-alone (expect >0):                   5799
+away+curious vs away-alone (expect 0):                            0
+away+curious vs curious-alone (expect >0):                     6723
+away+focused vs away-alone (expect 0):                            0
+away+focused vs focused-alone (expect >0):                     6434
+away IDLE vs away HAPPY (expect 0, mood-independent):             0
+away IDLE vs away WAITING (expect 0, mood-independent):           0
+```
+
+**A real bug this verification caught, not just a reasoning check that
+passed**: the first version of the `away IDLE` vs `away WAITING` diff came
+back non-zero (3353 differing pixels) instead of the expected 0. Cause:
+`paint_kitten`'s existing `jitter_x` line (the WAITING mood's "nervous
+shiver" horizontal jitter on the whole body) only checked `mood ==
+Mood.WAITING`, with no `away` condition at all -- so a WAITING git mood
+still made the *sleeping* cat visibly shiver, directly contradicting the
+"mood-independent while away" precedence decision above and the spec's own
+"deep-sleep regardless of whether the cat would otherwise be happy/
+waiting/sulking" framing. Fixed with one added condition
+(`and not away`); the diff above is from *after* that fix. Left as a
+comment at the call site pointing back to this section, the same way the
+v1.2 off-by-one bug and v1.6/v1.7 real bugs are documented at their fix
+sites, so a future session doesn't have to rediscover the reasoning.
+
+### Suppression -- the actually-useful part (per the spec's own framing)
+
+Three existing gate functions each gained an additive `is_away: bool =
+False` parameter, ANDed into their existing "AND together every condition"
+shape exactly like every other condition they already check, per the
+spec's explicit "add it the same way" instruction:
+
+- `should_spawn_mouse` (`mouse_game.py`) -- spawning a chase minigame
+  nobody is there to play is pointless.
+- `should_show_oneliner` (`oneliners.py`) -- this is the single gate that
+  already covered both the regular one-liner *and* the rare shooting-star
+  roll (`_on_oneliner_timer` in `main.py` only rolls for the shooting star
+  after `should_show_oneliner` already passed), so no second gate function
+  was needed for "the rare shooting-star roll" the spec calls out
+  separately -- it was already covered by construction.
+- `should_react_to_new_launch` (`app_launch.py`, the v1.6 curiosity gate)
+  -- reacting with curiosity to something new when nobody's there to notice
+  is equally pointless.
+
+### Wiring (`main.py`)
+
+`_check_idle()`, a new method called from the existing `_on_system_tick`
+(~7s system-status timer, per the spec's explicit "poll on the existing
+timer, don't add a new one" instruction, the same timer v1.6's
+`_check_app_launch` already piggybacks on) -- calls `get_idle_seconds()`,
+computes `away_now = is_away(idle_seconds)`, and:
+
+- On the *not-away -> away* transition, anchors `self._away_since = now -
+  idle_seconds` -- **not** just `now` -- so the recorded absence start time
+  is the real last-input moment, not merely "whenever this particular poll
+  happened to run" (which could already be several minutes into the
+  absence, given the 7s tick only checks periodically against a 10-minute
+  threshold).
+- On the *away -> not-away* transition, computes the real absence duration
+  from that anchor and, if it's at least `WELCOME_BACK_THRESHOLD_SECONDS`
+  (30 minutes, deliberately much longer than the 10-minute away threshold
+  itself so a routine short break doesn't get greeted every time) **and**
+  the cat is currently in the "pet" view (not the notification inbox),
+  calls `self.window.show_nudge(WELCOME_BACK_MESSAGE)` -- reusing the
+  existing nudge/one-liner bubble mechanism unchanged, per the spec's
+  explicit "no new rendering needed" instruction.
+- Always calls `self.window.set_away(away_now)` (new no-op-if-unchanged
+  setter on `KittenWindow`, same pattern as `set_focused`/`set_badge`)
+  regardless of whether a transition happened, so the sleep pose stays
+  correct on every tick.
+
+`self._is_away` (the `GittenApp`-level source of truth `_check_idle`
+maintains) is threaded into all three suppression call sites:
+`_check_app_launch`, `_on_oneliner_timer`, and `_on_mouse_spawn_timer` --
+read directly from the instance attribute rather than back through
+`window.py`, since `GittenApp` already computes and owns it authoritatively
+each system tick (this does mean the mouse-spawn/one-liner timers, which
+run on their own independent 45-90 minute cadences, see a value that can be
+up to ~7 seconds stale relative to the system tick -- an acceptable,
+already-established level of staleness in this codebase, the same kind the
+distraction/focus timers' own independent cadences already have relative
+to each other).
+
+### Testing
+
+`pytest -q` -> **146/146 passed** (136 pre-existing + 7 new
+`test_system_idle.py` tests for `is_away` -- below/at/above the default and
+a custom threshold, plus the default-constant value -- and one new test
+added to each of `test_mouse_game.py`, `test_oneliners.py`, and
+`test_app_launch.py` covering the new `is_away` suppression condition,
+including an "everything going on at once, including away" combination
+test in the first two, matching the existing style of those files rather
+than only adding new isolated tests).
+
+**Live, not just off-screen, per the task's explicit instruction**:
+
+1. **The raw `GetLastInputInfo`/`GetTickCount64` call, confirmed genuinely
+   live**: polled `get_idle_seconds()` every 1 second for 15 real seconds
+   without touching the mouse/keyboard myself. Values came back jittery and
+   sub-second (repeatedly resetting toward 0 rather than climbing smoothly)
+   -- **this machine has continuous real background input activity during
+   this session** (almost certainly the actual user's own concurrent use of
+   the machine, since the pattern is irregular rather than a fixed-interval
+   heartbeat), which made it impossible to observe a genuine 10-minute
+   idle-to-AWAY transition through real, unassisted waiting in this
+   session. This is recorded here as a real environment characteristic
+   (same spirit as the v1.4 offscreen-fonts and v1 zombie-process notes),
+   not swept under the rug -- what it *does* conclusively prove is that the
+   wrapper is reading real, live, sub-second-granularity system state
+   (correctly resetting in real time as real input actually happens),
+   rather than a stub or a value that only changes with process uptime.
+2. **The full transition + wiring, verified against a real, fully-wired
+   `GittenApp`** (`QT_QPA_PLATFORM=offscreen` for the Qt side, everything
+   else real, same convention as the v1.6/v1.7 live tests) by
+   monkeypatching `gitten.main.get_idle_seconds` -- a plain Python function
+   reference, not a compiled Qt/Shiboken method, so safe to monkeypatch per
+   this project's own established caution (see the v1.5/v1.7 dev notes
+   about `QMenu.exec` corrupting state) -- to simulate specific real idle
+   values while every downstream step (`_check_idle`, `window.set_away`,
+   the suppression gates, the welcome-back nudge) ran unmocked:
+   - A simulated 650s idle value correctly flipped `self._is_away` and
+     `window._away` to `True`, with `_away_since` anchored to within ~2ms
+     of the real "absence actually started ~650s ago" expectation.
+   - While away, `_on_oneliner_timer()` left `window._nudge_text`
+     unchanged (no new nudge fired) and `_on_mouse_spawn_timer()` left
+     `self._is_chasing` at `False` (no chase started).
+   - **Curiosity suppression confirmed against a real process, not a
+     fabricated PID set** -- mirroring the v1.6 live test exactly: launched
+     a real `notepad.exe`, polled the real `get_visible_window_pids()`
+     until its actual PID appeared (confirmed within ~1s), then called
+     `_check_app_launch()` while `self._is_away` was `True` and confirmed
+     `window._curious` stayed `False` despite the genuinely new process --
+     proving the suppression actually blocks a real launch, not just a
+     synthetic one. The notepad process was terminated afterward; `tasklist`
+     confirmed no stray notepad processes were left running.
+   - A short simulated absence (~20s, well under the 30-minute
+     `WELCOME_BACK_THRESHOLD_SECONDS`) transitioning back to active
+     correctly left the nudge bubble untouched (`None`).
+   - A long simulated absence (~2000s, over the 30-minute threshold)
+     transitioning back to active correctly set `window._nudge_text` to
+     exactly `WELCOME_BACK_MESSAGE`.
+3. **The AWAY pose rendered and visually inspected**, both via an
+   off-screen `QPixmap` pixel-diff (see the precedence section above) and
+   via a real side-by-side contact sheet (`paint_kitten` called directly
+   with Qt's real `windows` platform plugin, not `offscreen`, for correctly
+   rendered fonts -- the same font-rendering gotcha recorded in section 17
+   -- with no window ever actually shown on screen, since it only paints
+   onto an in-memory `QPixmap`) confirming the lying body, drooping ears,
+   flat closed eyes, and bigger zzz genuinely read as "asleep" and
+   genuinely read as different from the regular sitting IDLE pose next to
+   it, not just different by pixel count.
+
+With this, v1.8's detection, pose, precedence decision, and all three
+suppression gates are implemented, tested, and documented.
+
+## 20. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was

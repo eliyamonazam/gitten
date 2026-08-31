@@ -63,3 +63,13 @@ def test_empty_previous_set_on_first_poll_does_not_react():
 
 def test_default_cooldown_constant_is_ten_seconds():
     assert DEFAULT_COOLDOWN_SECONDS == 10.0
+
+
+def test_skips_when_away_even_with_a_genuine_new_pid_and_cooldown_elapsed():
+    assert not should_react_to_new_launch(
+        previous_pids={1},
+        current_pids={1, 2},
+        last_reaction_at=None,
+        now=100.0,
+        is_away=True,
+    )
