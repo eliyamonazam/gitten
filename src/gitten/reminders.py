@@ -89,6 +89,15 @@ def due_reminders(reminders: list[Reminder], now: float) -> list[Reminder]:
     return [r for r in reminders if r.due_at <= now]
 
 
+def sorted_by_due(reminders: list[Reminder]) -> list[Reminder]:
+    """Pending reminders ordered soonest-due first -- the one sort every
+    reminders-listing surface in this codebase uses (the command-bar
+    `reminders` reply, the v1.11 settings panel's Reminders tab, and the
+    v1.12 dashboard's Reminders section), pulled out here so all three stay
+    in sync rather than three independent `sorted(...)` calls."""
+    return sorted(reminders, key=lambda r: r.due_at)
+
+
 # -- reply formatting ---------------------------------------------------
 
 
@@ -111,13 +120,18 @@ def format_set_reply(message: str, seconds: float) -> str:
     return f'Reminder set: "{message}" in {format_duration(seconds)}'
 
 
+def format_reminder_row(reminder: Reminder, now: float) -> str:
+    """One reminder's display line -- `#id "message" (Xm Ys left)` -- shared
+    by the command-bar `reminders` reply, the settings panel's Reminders
+    tab, and the dashboard's Reminders section."""
+    return f'#{reminder.id} "{reminder.message}" ({format_duration(reminder.due_at - now)} left)'
+
+
 def format_reminders_list(reminders: list[Reminder], now: float) -> str:
     if not reminders:
         return "No pending reminders."
-    ordered = sorted(reminders, key=lambda r: r.due_at)
-    parts = [
-        f'#{r.id} "{r.message}" ({format_duration(r.due_at - now)} left)' for r in ordered
-    ]
+    ordered = sorted_by_due(reminders)
+    parts = [format_reminder_row(r, now) for r in ordered]
     return "; ".join(parts)
 
 

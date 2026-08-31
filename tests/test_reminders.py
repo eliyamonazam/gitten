@@ -11,12 +11,14 @@ from gitten.reminders import (
     format_due_reply,
     format_duration,
     format_flushed_reminders_reply,
+    format_reminder_row,
     format_reminders_list,
     format_set_reply,
     load_reminders,
     next_reminder_id,
     parse_duration,
     save_reminders,
+    sorted_by_due,
 )
 
 # -- parse_duration -----------------------------------------------------
@@ -135,6 +137,20 @@ def test_format_reminders_list_sorted_by_due_time():
     reminders = [_r(2, 200.0), _r(1, 100.0)]
     text = format_reminders_list(reminders, now=0.0)
     assert text.index("#1") < text.index("#2")
+
+
+def test_sorted_by_due_orders_soonest_first():
+    reminders = [_r(2, 200.0), _r(1, 100.0), _r(3, 300.0)]
+    assert [r.id for r in sorted_by_due(reminders)] == [1, 2, 3]
+
+
+def test_sorted_by_due_empty_list():
+    assert sorted_by_due([]) == []
+
+
+def test_format_reminder_row_contains_id_message_and_remaining():
+    row = format_reminder_row(_r(7, 160.0), now=100.0)
+    assert row == '#7 "msg7" (1m 0s left)'
 
 
 def test_format_due_reply():

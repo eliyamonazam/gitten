@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import subprocess
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -97,10 +97,14 @@ def count_commits_today(repo_path: Path) -> int | None:
     return len(lines)
 
 
-def get_commit_streak(repo_path: Path) -> int | None:
-    """Current consecutive-day commit streak in ``repo_path``, or None if it
-    can't be determined. Recomputed from `git log` each time -- same idiom as
-    `count_commits_today` -- rather than a running counter that could drift."""
+def get_commit_dates(repo_path: Path) -> list[str] | None:
+    """The raw ``YYYY-MM-DD`` date of every commit in ``repo_path``, one
+    entry per commit (duplicates included for multiple commits on the same
+    day), or None if it can't be determined. This is the one place that
+    actually runs ``git log --format=%ad --date=short`` -- `get_commit_streak`
+    below and the v1.12 dashboard's `streak.commits_by_day`/
+    `streak.longest_streak` all consume this same data rather than each
+    shelling out to git themselves."""
     try:
         result = subprocess.run(
             ["git", "log", "--format=%ad", "--date=short"],
@@ -114,8 +118,51 @@ def get_commit_streak(repo_path: Path) -> int | None:
         return None
     if result.returncode != 0:
         return None
-    dates = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def get_commit_streak(repo_path: Path) -> int | None:
+    """Current consecutive-day commit streak in ``repo_path``, or None if it
+    can't be determined. Recomputed from `git log` each time -- same idiom as
+    `count_commits_today` -- rather than a running counter that could drift."""
+    dates = get_commit_dates(repo_path)
+    if dates is None:
+        return None
     return compute_streak(dates, date.today())
+
+
+def count_commits_this_week(repo_path: Path) -> int | None:
+    """Number of commits made since the start of the current week (Monday
+    00:00 local time) in ``repo_path``, or None if it can't be determined --
+    the same `git log --since=... --oneline` shape `count_commits_today`
+    already uses, just widened from midnight to the start of the week, for
+    the v1.12 dashboard's "this week's commits" figure."""
+    week_start = date.today() - timedelta(days=date.today().weekday())
+    try:
+        # `--since=<bare ISO date>` is deliberately avoided here: git's
+        # approxidate parser does not reliably default a bare, no-time date
+        # to that day's midnight when the date is today -- confirmed live,
+        # a real repo with a commit at today's noon returned 0 results for
+        # `--since=2026-08-31` (today) while `--since=2026-08-30` (any other
+        # day) worked fine, and `--since="2026-08-31 00:00:00"` (explicit
+        # time) also worked. An explicit "00:00:00" sidesteps the ambiguity
+        # entirely -- the existing `count_commits_today` avoids this same
+        # trap a different way, by using the literal word "midnight" rather
+        # than a computed date string.
+        result = subprocess.run(
+            ["git", "log", f"--since={week_start.isoformat()} 00:00:00", "--oneline"],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    return len(lines)
 
 
 class GitWatcher(QObject):

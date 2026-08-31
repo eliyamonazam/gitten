@@ -26,6 +26,7 @@ from gitten.command_bar_hotkey import register_global_hotkey, unregister_global_
 from gitten.command_bar_window import COMMAND_BAR_HEIGHT, COMMAND_BAR_WIDTH, CommandBarWindow
 from gitten.commands import (
     COMMANDS_HELP_TEXT,
+    DASHBOARD_OPENED_REPLY,
     SETTINGS_OPENED_REPLY,
     UNKNOWN_COMMAND_REPLY,
     format_battery_reply,
@@ -35,6 +36,7 @@ from gitten.commands import (
     format_streak_reply,
     parse_command,
 )
+from gitten.dashboard_window import DashboardWindow
 from gitten.distraction import (
     DEFAULT_CONFIG_PATH,
     DistractionTracker,
@@ -174,6 +176,10 @@ class GittenApp:
         # afterward (see _open_settings_panel), so re-opening it doesn't
         # spawn duplicate windows.
         self._settings_window: SettingsWindow | None = None
+        # v1.12 dashboard: same lazy-create-and-reuse pattern (see
+        # _open_dashboard); refreshed on every system tick while visible,
+        # not just on open -- see _on_system_tick.
+        self._dashboard_window: DashboardWindow | None = None
         # v1.6 curiosity reaction: an empty baseline until the first system
         # tick actually polls -- should_react_to_new_launch treats an empty
         # previous-PID set as "establish the baseline, don't react", so the
@@ -317,6 +323,10 @@ class GittenApp:
         settings_action = QAction("Settings...", menu)
         settings_action.triggered.connect(self._open_settings_panel)
         menu.addAction(settings_action)
+
+        dashboard_action = QAction("Dashboard...", menu)
+        dashboard_action.triggered.connect(self._open_dashboard)
+        menu.addAction(dashboard_action)
 
         menu.addSeparator()
         quit_action = QAction("Quit Gitten", menu)
@@ -503,6 +513,11 @@ class GittenApp:
         self._check_idle()
         self._check_app_launch()
         self._check_reminders()
+        # v1.12: the dashboard is a live status view while open, refreshed
+        # on this same ~7s tick rather than a dedicated timer, per the spec
+        # -- a no-op whenever the window doesn't exist yet or isn't shown.
+        if self._dashboard_window is not None and self._dashboard_window.isVisible():
+            self._dashboard_window.refresh()
 
     def _check_idle(self) -> None:
         """v1.8: real system-wide keyboard/mouse idle detection, piggybacked
@@ -783,6 +798,9 @@ class GittenApp:
         if command == "settings":
             self._open_settings_panel()
             return SETTINGS_OPENED_REPLY
+        if command == "dashboard":
+            self._open_dashboard()
+            return DASHBOARD_OPENED_REPLY
         if command == "help":
             return COMMANDS_HELP_TEXT
         if command == "quit":
@@ -872,6 +890,20 @@ class GittenApp:
         currently reads `telegram_lists.json` back out. This just persists
         it, ready for that connection to read once it exists."""
         save_telegram_lists(favorites, bad, DEFAULT_TELEGRAM_LISTS_PATH)
+
+    # -- v1.12: dashboard ---------------------------------------------------
+
+    def _open_dashboard(self) -> None:
+        """Both the tray's "Dashboard..." action and the command bar's
+        `dashboard` command call this -- same lazy-create-and-reuse pattern
+        as `_open_settings_panel`. `refresh()` is called here (via
+        `DashboardWindow.showEvent`) on every open, and again on every
+        system tick while the window stays visible (`_on_system_tick`)."""
+        if self._dashboard_window is None:
+            self._dashboard_window = DashboardWindow(self)
+        self._dashboard_window.show()
+        self._dashboard_window.raise_()
+        self._dashboard_window.activateWindow()
 
     def run(self) -> int:
         return self.app.exec()

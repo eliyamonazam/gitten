@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gitten.reminders import format_duration
+from gitten.reminders import format_reminder_row, sorted_by_due
 from gitten.telegram_lists import DEFAULT_TELEGRAM_LISTS_PATH, load_telegram_lists
 
 _WINDOW_SIZE = (440, 520)
@@ -327,7 +327,7 @@ class SettingsWindow(QDialog):
             if row_widget is not None:
                 row_widget.deleteLater()
 
-        reminders = sorted(self._app.reminders, key=lambda r: r.due_at)
+        reminders = sorted_by_due(self._app.reminders)
         if not reminders:
             self._reminders_container_layout.addWidget(QLabel("No pending reminders."))
             return
@@ -337,10 +337,7 @@ class SettingsWindow(QDialog):
             row = QWidget()
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
-            remaining = format_duration(reminder.due_at - now)
-            row_layout.addWidget(
-                QLabel(f'#{reminder.id} "{reminder.message}" ({remaining} left)'), stretch=1
-            )
+            row_layout.addWidget(QLabel(format_reminder_row(reminder, now)), stretch=1)
             cancel_button = QPushButton("Cancel")
             cancel_button.clicked.connect(
                 lambda checked=False, rid=reminder.id: self._cancel_reminder(rid)

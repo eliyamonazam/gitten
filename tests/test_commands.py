@@ -1,5 +1,6 @@
 from gitten.commands import (
     COMMANDS_HELP_TEXT,
+    DASHBOARD_OPENED_REPLY,
     SETTINGS_OPENED_REPLY,
     UNKNOWN_COMMAND_REPLY,
     format_battery_reply,
@@ -119,6 +120,7 @@ def test_help_text_mentions_every_command():
         "reminders",
         "cancel",
         "settings",
+        "dashboard",
         "help",
         "quit",
     ):
@@ -131,3 +133,7 @@ def test_unknown_command_reply_mentions_help():
 
 def test_settings_opened_reply_is_nonempty():
     assert SETTINGS_OPENED_REPLY
+
+
+def test_dashboard_opened_reply_is_nonempty():
+    assert DASHBOARD_OPENED_REPLY

@@ -3302,3 +3302,238 @@ after both live scripts finished, via a small standalone `QSettings` cleanup
 call. All `~/.gitten/*.json` test artifacts were removed afterward and
 `tasklist` was checked clean after every live run, per this project's
 standing process-hygiene discipline.
+
+## 25. v1.12 -- the dashboard, and a `git log --since` footgun found while building it
+
+Input is `GITTEN_V1_12_SPEC.md`. A single read-only "at-a-glance" status
+window -- unlike the settings panel, nothing here is editable -- reusing the
+exact same normal-window precedent `settings_window.py` established one
+round ago, and reusing existing data sources end to end rather than adding
+new monitoring/query logic anywhere.
+
+### `src/gitten/dashboard_window.py` -- the second normal window
+
+`DashboardWindow(QDialog)` sets only `Qt.Window`, same as `SettingsWindow` --
+no transparency, no always-on-top, a real title bar. Verified the same way
+`settings_window.py` was: a live script asserted `windowFlags() &
+Qt.WindowStaysOnTopHint`/`& Qt.FramelessWindowHint` are both false and
+`testAttribute(Qt.WA_TranslucentBackground)` is false on the real, shown
+window. Reached the same two ways every other window in this app is: the
+tray's new "Dashboard..." action (`_build_tray`, right next to "Settings...")
+and the command bar's new `dashboard` command (`commands.
+DASHBOARD_OPENED_REPLY`, added to `COMMANDS_HELP_TEXT`). Same lazy-create-
+and-reuse pattern as `_open_settings_panel`: `GittenApp._open_dashboard`
+creates a single `DashboardWindow` on first call and reuses it afterward.
+
+Six sections, top to bottom:
+
+- **Cat identity**: name (bold), current state in plain words, and session
+  uptime -- reuses `self._app._format_uptime()` directly (unchanged,
+  already existed) rather than recomputing it. State is `away` when
+  `self._app._is_away`, else `sulking` when `attention_tracker.state ==
+  AttentionState.SULKING`, else the git-driven `Mood` in plain words (a
+  small `_MOOD_LABELS` dict maps `Mood.WAITING` to "waiting for a commit"
+  rather than the bare enum value "waiting", for readability) -- away and
+  sulking take priority since they're the more specific, more recently-true
+  state, matching the same precedence `sprite.py` already gives sulking
+  over the focused-reaction face (v1.4 dev notes, Feature 2).
+- **Streak calendar heatmap**: a hand-drawn `QPainter` grid
+  (`_HeatmapWidget`, 12 columns/weeks x 7 rows/weekdays), no external
+  charting library -- the same "draw it yourself with primitives" approach
+  every other visual surface in this app uses. Shaded by `streak.
+  commits_by_day(dates, weeks=12)` against four fixed count thresholds (1,
+  2-3, 4-6, 7+), deliberately fixed rather than relative to the window's own
+  max so the same count always reads the same shade.
+- **Current + best streak, side by side**: `get_commit_streak` (existing,
+  unchanged) for current, and a new `streak.longest_streak(dates)` for best-
+  ever -- a genuinely different calculation from the current-streak one, not
+  a rename of it (see below).
+- **This week's commits**: a new `git_watcher.count_commits_this_week`,
+  widened from `count_commits_today`'s existing `--since=midnight` shape to
+  the start of the current week -- see the footgun below for why this
+  needed a real fix mid-session, not just a mechanical widening.
+- **System snapshot**: `system_monitor.sample_system()`, called directly,
+  display-only -- no new monitoring logic, exactly per the spec.
+- **Pending reminders**: reuses `reminders.sorted_by_due`/
+  `format_reminder_row` (see below) -- read-only here (no Cancel buttons,
+  per the dashboard's "not editable configuration" scope), just the sorted
+  list of `format_reminder_row` lines.
+
+Refresh: `DashboardWindow.refresh()` recomputes and redraws every section.
+Called from `__init__` (first paint), `showEvent` (every reopen), and --
+per the spec's explicit "piggyback on the existing ~7s system tick, no new
+timer" instruction -- from `GittenApp._on_system_tick`, guarded by `if
+self._dashboard_window is not None and self._dashboard_window.isVisible()`
+so a closed/hidden dashboard costs nothing on every tick.
+
+### `streak.py` -- two new pure functions, built from the same git data
+
+- **`commits_by_day(commit_dates, weeks=12, today=None) -> dict[date, int]`**:
+  every day in the `weeks`-week window ending `today` is present in the
+  result (0 if no commits that day), not just days with activity, so the
+  heatmap widget never has to special-case a missing key. `today` is
+  injectable, same "pass in the clock" idiom `compute_streak` already uses,
+  for fake-date testability.
+- **`longest_streak(commit_dates) -> int`**: the longest run of consecutive
+  days *anywhere* in the full history, genuinely different from
+  `compute_streak` (which only ever measures the current run ending today
+  or yesterday) -- O(n): for every day whose previous day has no commit
+  (i.e. every possible streak start), count forward from there, so no day
+  is ever re-walked as part of more than one candidate run.
+
+Both consume the exact same `YYYY-MM-DD` date-string shape `compute_streak`
+already does, fed from a **new `git_watcher.get_commit_dates(repo_path)`**
+-- the raw, non-deduplicated list of one date per commit, pulled out of what
+used to be `get_commit_streak`'s own inline `git log --format=%ad
+--date=short` call + set-comprehension dedup. `get_commit_streak` itself now
+just calls `get_commit_dates` and passes the result straight to
+`compute_streak` (which already builds its own set internally, so passing
+duplicates through is harmless) -- this is the "don't add a second,
+differently-shaped git query" instruction satisfied structurally: there is
+now exactly one function in the codebase that runs this git command, and
+`get_commit_streak`/`commits_by_day`/`longest_streak` all consume its output
+rather than three independent subprocess calls.
+
+### `reminders.py` -- two small pieces shared between the settings panel and the dashboard
+
+Per the spec's explicit instruction to reuse "the exact same list-building
+logic the settings panel's Reminders tab already has," pulled the two
+pieces that logic was actually made of out into `reminders.py` itself
+(previously inlined directly in `settings_window.py`):
+
+- **`sorted_by_due(reminders) -> list[Reminder]`** -- `sorted(reminders,
+  key=lambda r: r.due_at)`, trivial but now genuinely one definition instead
+  of independent copies.
+- **`format_reminder_row(reminder, now) -> str`** -- the
+  `#id "message" (Xm Ys left)` line, pulled out of what used to be an
+  f-string inline in both `format_reminders_list` and
+  `settings_window._refresh_reminders_tab`.
+
+`format_reminders_list` (the command-bar `reminders` reply) was refactored
+to use both, so there are now three call sites (`reminders` command,
+settings panel, dashboard) sharing one sort and one row-format instead of
+three copies that could silently drift apart. `settings_window.
+_refresh_reminders_tab` was updated to use them too rather than left as the
+one remaining inline copy.
+
+### A real `git log --since` footgun, found live while building this
+
+`count_commits_this_week` started out as the mechanical "widen `count_commits_today`'s
+`--since=midnight` to the start of the week" the spec describes: `--since=
+{week_start.isoformat()}` (a bare `YYYY-MM-DD`). Live-testing it against a
+real scratch repo with a real commit made *today* returned **0** -- wrong.
+Chased down by hand, not assumed:
+
+- `git log --since="2026-08-31 00:00:00" --oneline` (explicit midnight)
+  correctly found the commit.
+- `git log --since=2026-08-31 --oneline` (bare date, no time, and that date
+  is *today*) returned **nothing**, reproducibly, on the same repo.
+- `git log --since=2026-08-30 --oneline` (bare date, but *not* today) found
+  it correctly.
+
+Git's `approxidate` parser does not reliably default a bare, no-time date
+string to that day's midnight when the date in question is today -- this is
+exactly the trap `count_commits_today` already avoids, by a different route:
+it uses the literal word `"midnight"` (which `approxidate` always treats as
+"00:00:00 today" unambiguously), never a computed date string. Fixed by
+giving `count_commits_this_week` an explicit time component too --
+`--since=f"{week_start.isoformat()} 00:00:00"` -- which sidesteps the
+ambiguity the same way the manual `"2026-08-31 00:00:00"` test above did.
+Documented directly in the function's own comment so a future session
+reaching for `--since=<computed date>` anywhere else in this codebase
+doesn't rediscover this by hand again.
+
+**A second, separate footgun found while building this session's own
+screenshot test data, worth recording since it could resurface in any
+future live test that backdates commits**: a first version of the
+screenshot script's scratch-repo builder created 70 backdated commits by
+iterating a day-offset counter *upward* (today first, 69-days-ago last),
+which makes today's commit the repo *root* and the 69-days-ago commit
+*HEAD* -- backwards from how any real repo is ever built, where HEAD is
+always the newest commit. `git log --since=...`'s early-termination
+optimization assumes history is walked newest-to-oldest from HEAD, so
+against this artificially-reversed history it stopped at the very first
+commit it saw (HEAD, 69 days old, older than the cutoff) and concluded
+there was nothing newer *anywhere*, silently undercounting despite several
+genuinely-recent commits sitting deeper in the chain. Not a Gitten bug --
+`count_commits_this_week`/`count_commits_today` are only ever exercised
+against real repos, which are never built backwards like this -- but it
+cost real debugging time before the cause was found, so the fix (iterate
+oldest-day-first, so HEAD ends up being today's commit like a real repo)
+is recorded here for any future session writing a similar backdated-commit
+test script. Worth flagging as a known, inherent limitation of both
+`--since`-based functions (`count_commits_today`, `count_commits_this_week`):
+a real repo whose commit graph doesn't line up with commit-date order (an
+unusual history from rebases, cherry-picks across branches, or a wrong
+system clock at commit time) could in principle undercount the same way --
+`get_commit_dates`/`commits_by_day`/`longest_streak` are immune to this
+since they never use `--since` at all, just an unfiltered `git log` over
+the full history.
+
+### Testing
+
+`pytest -q` -> **234/234 passed** (220 pre-existing + 14 new: 5
+`test_streak.py` tests for `commits_by_day` (empty history, window
+size/bounds, a history spanning fewer than the requested weeks, multiple
+commits on the same day, dates outside the window ignored), 5 for
+`longest_streak` (empty, no gaps, one gap picks the longer run, best run in
+the past rather than the most recent run -- the exact case an
+only-checks-the-current-run implementation would get wrong -- and
+duplicates not inflating it), 3 `test_reminders.py` tests for
+`sorted_by_due`/`format_reminder_row`, and 1 `test_commands.py` addition for
+`DASHBOARD_OPENED_REPLY`. No dedicated test file for `dashboard_window.py`
+itself, matching this codebase's established pattern for Qt-glue windows
+(neither `settings_window.py` nor `command_bar_window.py` have one either)
+-- verified live instead.
+
+**Live, against a real (offscreen) `GittenApp` and a real scratch repo with
+a genuine 5-day best-ever streak (well in the past) and a separate 1-day
+current streak (today)** -- deliberately shaped so an implementation that
+only ever looked at the current run would get "best" wrong, the same case
+the unit tests cover in isolation, now proven through the real reused
+`git_watcher`/`streak.py` functions end to end: opened the dashboard
+(confirmed lazy-creation), asserted the current/best streak labels, the
+this-week-commits label, and the heatmap widget's stored counts all exactly
+match calling `get_commit_streak`/`longest_streak`/`count_commits_this_week`/
+`commits_by_day` directly against the same repo (not just "some plausible
+text"), confirmed the identity section shows the real cat name and mentions
+uptime, confirmed the system section's labels are populated from
+`sample_system()`, set two real reminders and confirmed the Reminders
+section lists them soonest-due-first, confirmed the command bar's
+`dashboard` command opens the same reused window instance. **The live
+periodic-refresh requirement specifically** (the one the spec calls out as
+needing more than a static check): made a brand-new real commit in the
+watched repo while the dashboard was open, called the real
+`_on_system_tick()` (not a manual `dashboard.refresh()`), and confirmed the
+"Commits this week" label actually changed to reflect it -- with the window
+never closed or reopened in between; then confirmed the inverse just as
+carefully -- hiding the dashboard and making another new commit did **not**
+change its (now-stale, correctly so) label until `_on_system_tick` ran
+again, proving the `isVisible()` guard genuinely gates the refresh rather
+than it running unconditionally; then reopening picked the change back up
+via `showEvent`.
+
+**Real screenshots, actually opened and inspected from the start** (per the
+spec's explicit instruction to hold this new window to the same standard
+`settings_window.py` was held to only after a bug report, not before) -- a
+live, non-offscreen `GittenApp` with a real scratch repo (~70 backdated
+commits scattered realistically across 12 weeks, plus a real 4-day current
+streak and a real longer best streak, plus two real pending reminders) had
+its dashboard opened and `QScreen.grabWindow` captured, actually opened and
+looked at: the identity line, a correctly-shaded heatmap grid (light gray
+for empty days, progressively darker green for busier ones), current/best
+streak figures, a non-zero this-week count, all four system readings, and
+both reminders listed soonest-due-first -- all present, legible, and
+correctly laid out in a single scrollable-height column.
+
+All scratch repos' temp directories and `~/.gitten/*.json` test artifacts
+were removed afterward, and `HKCU\Software\Gitten\Gitten\repo` (pre-seeded
+so `_restore_repo` wouldn't open a real blocking file-choose dialog in a
+non-interactive script, same technique v1.11's screenshot script used) was
+reset back to unset in each script's `finally` block. **One thing noticed
+but deliberately left untouched**: two real `python -m gitten.main`
+processes were found already running on this machine partway through this
+session (confirmed via their real command line, not guessed) -- these are
+the user's own actual app instances, not anything spawned by this session's
+test scripts (which never invoke `-m gitten.main`), so they were left alone
+rather than killed.
