@@ -25,6 +25,14 @@ each tab edits an independent config surface with its own persistence file
 mid-edit in another tab. The Reminders tab has no Save button at all: it's
 a live view with an immediate per-row Cancel action (reusing
 `_handle_cancel_command`), not something you stage and commit.
+
+v1.13 styles this window from `theme.py`, this app's shared design system
+-- purely visual, no behavior changed: every button/tab/list/line-edit
+picks up the shared palette via `theme.apply_theme(self)`, each tab's Save
+button is tagged `theme.mark_primary_button(...)` so it reads as this
+screen's one clear action, and field labels/status text are tagged
+`mark_section_header`/`mark_muted_label` for a bit of visual hierarchy a
+flat list of identical `QLabel`s didn't have before.
 """
 
 from __future__ import annotations
@@ -46,10 +54,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gitten import theme
 from gitten.reminders import format_reminder_row, sorted_by_due
 from gitten.telegram_lists import DEFAULT_TELEGRAM_LISTS_PATH, load_telegram_lists
 
-_WINDOW_SIZE = (440, 520)
+_WINDOW_SIZE = (460, 640)
 
 
 class SettingsWindow(QDialog):
@@ -59,8 +68,11 @@ class SettingsWindow(QDialog):
         self.setWindowTitle("Gitten Settings")
         self.setWindowFlags(Qt.Window)
         self.resize(*_WINDOW_SIZE)
+        theme.apply_theme(self)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(theme.SPACING_MD, theme.SPACING_MD, theme.SPACING_MD, theme.SPACING_MD)
+        layout.setSpacing(theme.SPACING_SM)
         self._tabs = QTabWidget()
         layout.addWidget(self._tabs)
 
@@ -119,6 +131,24 @@ class SettingsWindow(QDialog):
     def _list_items(list_widget: QListWidget) -> list[str]:
         return [list_widget.item(i).text() for i in range(list_widget.count())]
 
+    @staticmethod
+    def _header(text: str) -> QLabel:
+        """A field/section label styled per `theme.py`'s `sectionHeader`
+        rule -- a small helper so every tab tags its labels the same way
+        rather than repeating the `QLabel(...)` + `mark_section_header`
+        pair at each call site."""
+        label = QLabel(text)
+        theme.mark_section_header(label)
+        return label
+
+    @staticmethod
+    def _muted(text: str) -> QLabel:
+        """A secondary/transient label (a "Saved." confirmation) styled
+        per `theme.py`'s `muted` rule."""
+        label = QLabel(text)
+        theme.mark_muted_label(label)
+        return label
+
     def _on_tab_changed(self, index: int) -> None:
         if self._tabs.widget(index) is self._reminders_tab_widget:
             self._refresh_reminders_tab()
@@ -140,8 +170,9 @@ class SettingsWindow(QDialog):
     def _build_general_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setSpacing(theme.SPACING_SM)
 
-        layout.addWidget(QLabel("Watched repository:"))
+        layout.addWidget(self._header("Watched repository:"))
         repo_row = QHBoxLayout()
         self._repo_label = QLabel()
         self._repo_label.setWordWrap(True)
@@ -152,12 +183,12 @@ class SettingsWindow(QDialog):
         layout.addLayout(repo_row)
         self._refresh_repo_label()
 
-        layout.addSpacing(12)
-        layout.addWidget(QLabel("Cat's name:"))
+        layout.addSpacing(theme.SPACING_MD)
+        layout.addWidget(self._header("Cat's name:"))
         self._name_edit = QLineEdit(self._app.cat_name)
         layout.addWidget(self._name_edit)
 
-        layout.addWidget(QLabel("Cat's birthday (YYYY-MM-DD):"))
+        layout.addWidget(self._header("Cat's birthday (YYYY-MM-DD):"))
         self._birthday_edit = QLineEdit(
             self._app.birthday.isoformat() if self._app.birthday else ""
         )
@@ -165,9 +196,10 @@ class SettingsWindow(QDialog):
 
         save_row = QHBoxLayout()
         save_button = QPushButton("Save")
+        theme.mark_primary_button(save_button)
         save_button.clicked.connect(self._save_general)
         save_row.addWidget(save_button)
-        self._general_status = QLabel("")
+        self._general_status = self._muted("")
         save_row.addWidget(self._general_status)
         save_row.addStretch()
         layout.addLayout(save_row)
@@ -201,21 +233,22 @@ class SettingsWindow(QDialog):
     def _build_distraction_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setSpacing(theme.SPACING_SM)
 
-        layout.addWidget(QLabel("Distracting window titles (substring match):"))
+        layout.addWidget(self._header("Distracting window titles (substring match):"))
         titles_editor, self._distraction_titles_list = self._build_list_editor(
             list(self._app.distracting_titles)
         )
         layout.addWidget(titles_editor)
 
-        layout.addWidget(QLabel("Distracting processes (exact match):"))
+        layout.addWidget(self._header("Distracting processes (exact match):"))
         processes_editor, self._distraction_processes_list = self._build_list_editor(
             list(self._app.distracting_processes)
         )
         layout.addWidget(processes_editor)
 
         threshold_row = QHBoxLayout()
-        threshold_row.addWidget(QLabel("Nudge after (minutes):"))
+        threshold_row.addWidget(self._header("Nudge after (minutes):"))
         self._distraction_threshold_spin = QSpinBox()
         self._distraction_threshold_spin.setRange(1, 1440)
         self._distraction_threshold_spin.setValue(
@@ -227,9 +260,10 @@ class SettingsWindow(QDialog):
 
         save_row = QHBoxLayout()
         save_button = QPushButton("Save")
+        theme.mark_primary_button(save_button)
         save_button.clicked.connect(self._save_distraction)
         save_row.addWidget(save_button)
-        self._distraction_status = QLabel("")
+        self._distraction_status = self._muted("")
         save_row.addWidget(self._distraction_status)
         save_row.addStretch()
         layout.addLayout(save_row)
@@ -247,16 +281,18 @@ class SettingsWindow(QDialog):
     def _build_focus_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setSpacing(theme.SPACING_SM)
 
-        layout.addWidget(QLabel("Test/build process command-line substrings:"))
+        layout.addWidget(self._header("Test/build process command-line substrings:"))
         editor, self._focus_list = self._build_list_editor(list(self._app.focus_substrings))
         layout.addWidget(editor)
 
         save_row = QHBoxLayout()
         save_button = QPushButton("Save")
+        theme.mark_primary_button(save_button)
         save_button.clicked.connect(self._save_focus)
         save_row.addWidget(save_button)
-        self._focus_status = QLabel("")
+        self._focus_status = self._muted("")
         save_row.addWidget(self._focus_status)
         save_row.addStretch()
         layout.addLayout(save_row)
@@ -272,8 +308,9 @@ class SettingsWindow(QDialog):
     def _build_telegram_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setSpacing(theme.SPACING_SM)
 
-        note = QLabel(
+        note = self._muted(
             "Configures who gets a reaction once Telegram is connected -- "
             "the connection itself is still pending (see DEVELOPMENT_NOTES.md, "
             "v1.3)."
@@ -283,19 +320,20 @@ class SettingsWindow(QDialog):
 
         favorites, bad = load_telegram_lists(DEFAULT_TELEGRAM_LISTS_PATH)
 
-        layout.addWidget(QLabel("Favorite senders:"))
+        layout.addWidget(self._header("Favorite senders:"))
         fav_editor, self._telegram_favorites_list = self._build_list_editor(favorites)
         layout.addWidget(fav_editor)
 
-        layout.addWidget(QLabel("Bad senders:"))
+        layout.addWidget(self._header("Bad senders:"))
         bad_editor, self._telegram_bad_list = self._build_list_editor(bad)
         layout.addWidget(bad_editor)
 
         save_row = QHBoxLayout()
         save_button = QPushButton("Save")
+        theme.mark_primary_button(save_button)
         save_button.clicked.connect(self._save_telegram)
         save_row.addWidget(save_button)
-        self._telegram_status = QLabel("")
+        self._telegram_status = self._muted("")
         save_row.addWidget(self._telegram_status)
         save_row.addStretch()
         layout.addLayout(save_row)
@@ -315,6 +353,7 @@ class SettingsWindow(QDialog):
         self._reminders_container = QWidget()
         self._reminders_container_layout = QVBoxLayout(self._reminders_container)
         self._reminders_container_layout.setContentsMargins(0, 0, 0, 0)
+        self._reminders_container_layout.setSpacing(theme.SPACING_SM)
         outer.addWidget(self._reminders_container)
         outer.addStretch()
         self._refresh_reminders_tab()
@@ -329,7 +368,7 @@ class SettingsWindow(QDialog):
 
         reminders = sorted_by_due(self._app.reminders)
         if not reminders:
-            self._reminders_container_layout.addWidget(QLabel("No pending reminders."))
+            self._reminders_container_layout.addWidget(self._muted("No pending reminders."))
             return
 
         now = time.time()

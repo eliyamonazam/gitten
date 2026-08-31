@@ -3655,3 +3655,194 @@ above.
 
 Committed separately from any code change (there wasn't any this round),
 per the brief's explicit instruction, and pushed to `origin/main`.
+
+## 27. v1.13 -- a real design system, applied to Settings & Dashboard
+
+Input is `GITTEN_V1_13_SPEC.md`. Two-part round, in the order the spec
+lays out: define `theme.py` first, then apply it to exactly two windows
+(Settings, Dashboard) and nothing else. The command bar, the nudge/alert
+bubbles, and the cat sprite itself were **not** touched this round, per
+the spec's explicit scope -- confirmed after the fact by diffing this
+round's changes against `git status`: only `theme.py` (new),
+`settings_window.py`, and `dashboard_window.py` changed, plus the two
+screenshot assets.
+
+### Part 1: the color audit, before writing a single new value
+
+Grepped this entire codebase for `QColor(`/hex literals before picking
+anything, per the spec's explicit "audit before inventing" instruction --
+documented directly in `theme.py`'s own module docstring so a future
+session can see the reasoning without re-running the grep:
+
+- The cat's own coral body (`sprite.BODY_COLOR` `#E8935F`) -- chosen as
+  this round's **primary accent**, verbatim, not a new invented brand
+  color, specifically so Settings/Dashboard read as "the same cat's
+  control panel" rather than a bolted-on separate app.
+- The reminder-alert amber (`sprite._ALERT_FILL_COLOR`/`_ALERT_BORDER_COLOR`,
+  itself already reused from the low-battery badge color per v1.10) --
+  kept as `theme.WARNING_FILL`/`WARNING_BORDER`, unchanged, ready for a
+  future round if Settings/Dashboard ever need a warning state (none does
+  yet this round).
+- The heatmap's four greens and empty-day gray
+  (`dashboard_window._HEATMAP_COLORS`/`_HEATMAP_EMPTY_COLOR`) --
+  confirmed as meaningful data encoding and **deliberately left
+  untouched**, per the spec's explicit instruction.
+- `sprite.OUTLINE_COLOR` (`#2C2C2A`) -- reused verbatim as `theme.
+  TEXT_PRIMARY`, so body text in Settings/Dashboard and the cat's own
+  linework share one "ink" color instead of the app having two different
+  near-blacks living side by side.
+- A scatter of one-off badge/accessory colors with no shared home
+  (critical-battery red, charging yellow, high-resource blue, disk gray,
+  streak-star gold, purr-heart pink, particle gold) and the dark
+  translucent overlay backdrops (command bar, inbox panel) -- all noted in
+  the audit, none touched, since none of them belong to Settings/Dashboard
+  and the overlays are explicitly out of scope this round.
+
+### `theme.py` -- what it actually defines
+
+A `QColor` palette (primary accent + hover/pressed/soft variants, the
+reused warning tone, three light-theme surface tones, a border color, two
+text colors), `FONT_FAMILY`/`FONT_SIZE_BASE`, spacing constants
+(`SPACING_XS/SM/MD`), and **one** standard corner radius (`RADIUS = 8`,
+`RADIUS_SM = 4` for small nested elements) used everywhere rather than an
+ad hoc number per widget, per the spec's explicit ask. Expressed as a
+single QSS string (`STYLESHEET`) covering `QDialog`/`QLabel`/`QTabWidget`/
+`QTabBar`/`QPushButton`/`QLineEdit`/`QSpinBox`/`QListWidget`, plus three
+small functions: `apply_theme(widget)` (one call per window, QSS cascades
+to every child automatically), `mark_primary_button(button)`, and
+`mark_muted_label(label)`/`mark_section_header(label)`.
+
+**The primary/secondary button distinction was a judgment call the spec
+didn't spell out, worth recording**: giving *every* `QPushButton` a solid
+coral fill (Save, Add, Remove, Cancel-per-reminder-row, Close, all at
+once) would have read as a wall of identically loud buttons rather than a
+considered hierarchy -- the opposite of what a design system is for. Instead,
+`QPushButton` defaults to a neutral outlined style, and only the one
+genuinely primary action per screen (each settings tab's own Save button)
+gets tagged coral via a Qt dynamic property (`QPushButton[primary="true"]`
+in the QSS, set via `mark_primary_button`) -- the same idiom used for
+`sectionHeader`/`muted` label tagging. Dashboard's "Close" stays neutral
+deliberately, since dismissing a read-only view isn't a "primary action"
+the way committing an edit is.
+
+### Part 2: applying it
+
+`settings_window.py` and `dashboard_window.py` each gained one
+`theme.apply_theme(self)` call plus layout margins/spacing pulled from
+`theme.py`'s constants instead of the ad hoc `addSpacing(8)`/`addSpacing(12)`
+literals that were there before. Every field/section label across both
+windows is now tagged `mark_section_header` (coral, semi-bold) or
+`mark_muted_label` (the "Saved." confirmations, the Telegram tab's
+explanatory note, empty-state "No pending reminders." text, and the
+dashboard's "Commits this week" line, which reads as supporting detail
+under the current/best streak headline). The dashboard's cat-name and
+current/best-streak numbers gained light inline rich-text emphasis (the
+name in the accent color, the streak counts bolded) -- a purely
+presentational change to the same underlying values, not new data.
+
+**`_HeatmapWidget` keeps its own green shading logic completely
+untouched** (confirmed by diff -- `_shade_for_count`/`_HEATMAP_COLORS`
+have zero changes), per the spec's explicit "meaningful data-encoding, not
+decoration to be reskinned" instruction. What did change: it now paints a
+rounded `theme.SURFACE_INSET` card behind its (unchanged) cells first,
+with a small `_CARD_PADDING` margin so the grid doesn't bleed to the
+card's edge -- the one new visual addition is purely a themed backdrop,
+not a change to how any cell is colored.
+
+**No functional change anywhere -- verified live, not just by reading the
+diff**: re-ran both existing live smoke-test scripts from the v1.11/v1.12
+sessions (`live_settings_test.py`, `live_dashboard_test.py`) unmodified
+except for two things that turned out to be necessary, both recorded
+below since they're worth remembering for future live scripts in this
+project:
+
+1. **`live_settings_test.py` hung indefinitely on this run** (zero output
+   even after 60+ seconds) -- root cause, found by inspection rather than
+   guessing: unlike `live_dashboard_test.py` (which pre-seeds `repo/path`
+   into `QSettings` *before* constructing `GittenApp`), this script
+   constructed `GittenApp()` first and only pre-seeded a scratch repo
+   afterward. It had silently worked in every prior run only because
+   `QSettings`'s `repo/path` happened to still hold a leftover value from
+   earlier testing in the same session; this session started with
+   genuinely clean `QSettings` (a good sign, not a bug -- confirms the
+   v1.11/v1.12/housekeeping sessions' own cleanup discipline actually
+   worked), which meant `GittenApp.__init__` -> `_restore_repo()` -> a
+   real, blocking `QFileDialog.getExistingDirectory()` with no monkeypatch
+   installed yet and no one there to dismiss it. Fixed the same way every
+   other scratch script in this project already does it correctly: seed
+   `repo/path` into `QSettings` *before* `GittenApp()` is constructed, not
+   after. Worth restating as a standing rule for this project's own live
+   test scripts: **always pre-seed `repo/path` before constructing
+   `GittenApp` in a non-interactive script**, regardless of whether a
+   monkeypatch is coming later for a different purpose.
+2. **One assertion in `live_dashboard_test.py` needed updating**, and
+   confirmed this was the *expected*, intentional styling change rather
+   than a real regression before touching the script: it asserted the
+   current/best streak labels' exact plain-text value, which now includes
+   the new `<b>...</b>` rich-text tags around the number (see above) --
+   updated the assertion to match the new (still value-identical) text
+   rather than reverting the styling.
+
+With both fixes applied, **all 21 checks across the two live scripts
+passed** (10 in the settings script, 11 in the dashboard script) -- every
+Save button, every live-apply path (distraction/focus config pushing into
+live in-memory state), every Cancel button, tab switching, reopening, and
+both windows' command-bar dispatch (`settings`/`dashboard`) all still work
+exactly as before, confirming this was a pure styling pass. `pytest -q` ->
+unchanged at **234/234 passed** (no pure-logic module touched).
+
+### Real screenshots, compared side by side against last round's, per the spec's explicit instruction
+
+A live, non-offscreen `GittenApp` had Settings (Distraction tab) and
+Dashboard opened and captured via `QScreen.grabWindow`, using the *same*
+scratch-repo/reminders setup the last round's screenshots used, so the
+comparison is apples to apples rather than differently-staged data. Both
+were actually opened and looked at, side by side against the current
+`assets/settings.png`/`assets/dashboard.png` from last round (v1.11/v1.12,
+default unstyled Qt widgets):
+
+- **Settings**: a warm off-white page background instead of flat system
+  gray, a white card with a visible coral-underlined active tab (the
+  inactive tabs now clearly recede), coral section-header labels instead
+  of identical plain-black text for every field, list widgets sitting on
+  a warm inset background instead of stark white-on-white, and one
+  unmistakable solid-coral "Save" button per tab instead of an
+  identically-styled gray button indistinguishable from "Add"/"Remove."
+  Genuinely, clearly more polished -- not a subtle tweak.
+- **Dashboard**: the same warm page/card treatment, coral section headers
+  for "Commit activity"/"System"/"Pending reminders", the cat's name
+  rendered in the accent color, bolded streak numbers, and -- the one
+  piece the spec specifically asked to not leave merely "meaningful in
+  isolation" -- the heatmap grid now sits inside its own rounded, subtly
+  shaded card instead of floating directly on the dialog's bare
+  background, so it reads as *part of* the themed window rather than
+  pasted on top of it.
+
+**One trade-off noticed and disclosed rather than glossed over, per the
+spec's explicit "if anything doesn't clearly read as more polished, say so
+plainly" instruction**: the Distraction tab's title list, which
+previously showed all 6 shipped defaults without scrolling, now shows 5
+with a scrollbar to reach the 6th. Cause: `QListWidget::item`'s new
+themed padding (`theme.SPACING_XS` top/bottom, for visual breathing room)
+makes each row taller, and that costs more total list height than the
+window's own increased size (`_WINDOW_SIZE` was widened from `(440, 520)`
+to `(460, 640)` to compensate, but not quite enough for this specific
+6-item case) gains back. This is a minor, genuine regression in
+information density on one specific list in one specific tab, not
+something to declare invisible -- the list is still fully usable (a
+completely ordinary, unremarkable scrollbar, not a rendering bug), and
+every other aspect of both windows is unambiguously more polished than
+before, but this one specific trade-off is recorded here rather than
+silently absorbed into "success," per the spec's own standard for this
+round.
+
+### Files changed this round
+
+`src/gitten/theme.py` (new), `src/gitten/settings_window.py`,
+`src/gitten/dashboard_window.py`, `assets/settings.png`,
+`assets/dashboard.png` (both replaced with the newly-styled captures, so
+the README -- which references these exact files -- stays visually
+accurate rather than showing a stale pre-v1.13 look immediately after this
+round). `command_bar_window.py`, `window.py` (the nudge bubble/inbox
+panel), and `sprite.py` were **not** touched, confirmed via `git status`
+before committing, per the spec's explicit scope.

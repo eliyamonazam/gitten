@@ -16,6 +16,14 @@ tracker state (`mood_machine`, `attention_tracker`, `_is_away`,
 `format_reminder_row` -- the exact same two pieces the settings panel's
 Reminders tab uses, pulled out into `reminders.py` alongside this file so
 neither window duplicates the sort/formatting.
+
+v1.13 styles this window from `theme.py`, purely visually -- every section
+label is tagged `theme.mark_section_header`, and `_HeatmapWidget` now
+paints its own rounded `theme.SURFACE_INSET` backdrop before drawing its
+(unchanged) green-shaded cells, so it reads as sitting *in* the themed
+window rather than pasted onto a mismatched background. The heatmap's own
+data-encoding colors (`_HEATMAP_COLORS`/`_HEATMAP_EMPTY_COLOR`) are
+deliberately untouched, per the spec.
 """
 
 from __future__ import annotations
@@ -34,6 +42,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gitten import theme
 from gitten.attention import AttentionState
 from gitten.git_watcher import count_commits_this_week, get_commit_dates, get_commit_streak
 from gitten.mood import Mood
@@ -84,11 +93,16 @@ class _HeatmapWidget(QWidget):
     "draw it yourself" approach every other visual in this app uses
     (`sprite.py`, the nudge bubble, the command bar backdrop)."""
 
+    # Extra margin around the cell grid itself so the themed backdrop reads
+    # as a real card with breathing room, not the grid's own tight _CELL_GAP
+    # bleeding straight to the card's edge.
+    _CARD_PADDING = 6
+
     def __init__(self) -> None:
         super().__init__()
         self._counts: dict[date, int] = {}
-        width = _HEATMAP_WEEKS * (_CELL_SIZE + _CELL_GAP) + _CELL_GAP
-        height = 7 * (_CELL_SIZE + _CELL_GAP) + _CELL_GAP
+        width = _HEATMAP_WEEKS * (_CELL_SIZE + _CELL_GAP) + _CELL_GAP + self._CARD_PADDING * 2
+        height = 7 * (_CELL_SIZE + _CELL_GAP) + _CELL_GAP + self._CARD_PADDING * 2
         self.setFixedSize(width, height)
 
     def set_counts(self, counts: dict[date, int]) -> None:
@@ -98,6 +112,14 @@ class _HeatmapWidget(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+
+        # v1.13: a themed card backdrop behind the (unchanged) data-colored
+        # cells, so the heatmap sits *in* the window's surface rather than
+        # floating on a mismatched default background -- see theme.py.
+        painter.setPen(theme.BORDER)
+        painter.setBrush(theme.SURFACE_INSET)
+        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), theme.RADIUS, theme.RADIUS)
+
         painter.setPen(Qt.NoPen)
         if not self._counts:
             return
@@ -105,8 +127,8 @@ class _HeatmapWidget(QWidget):
         for day, count in self._counts.items():
             week_index = (day - oldest).days // 7
             row = day.weekday()  # 0=Monday .. 6=Sunday
-            x = _CELL_GAP + week_index * (_CELL_SIZE + _CELL_GAP)
-            y = _CELL_GAP + row * (_CELL_SIZE + _CELL_GAP)
+            x = self._CARD_PADDING + _CELL_GAP + week_index * (_CELL_SIZE + _CELL_GAP)
+            y = self._CARD_PADDING + _CELL_GAP + row * (_CELL_SIZE + _CELL_GAP)
             painter.setBrush(_shade_for_count(count))
             painter.drawRoundedRect(x, y, _CELL_SIZE, _CELL_SIZE, 2, 2)
 
@@ -117,20 +139,24 @@ class DashboardWindow(QDialog):
         self._app = app
         self.setWindowTitle("Gitten Dashboard")
         self.setWindowFlags(Qt.Window)
-        self.resize(420, 620)
+        self.resize(420, 640)
+        theme.apply_theme(self)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(theme.SPACING_MD, theme.SPACING_MD, theme.SPACING_MD, theme.SPACING_MD)
+        layout.setSpacing(theme.SPACING_SM)
 
         self._identity_label = QLabel()
         self._identity_label.setWordWrap(True)
         layout.addWidget(self._identity_label)
 
-        layout.addSpacing(8)
-        layout.addWidget(QLabel(f"Commit activity (last {_HEATMAP_WEEKS} weeks):"))
+        layout.addSpacing(theme.SPACING_MD)
+        layout.addWidget(self._header(f"Commit activity (last {_HEATMAP_WEEKS} weeks):"))
         self._heatmap = _HeatmapWidget()
         layout.addWidget(self._heatmap)
 
         streak_row = QHBoxLayout()
+        streak_row.setSpacing(theme.SPACING_MD)
         self._current_streak_label = QLabel()
         self._best_streak_label = QLabel()
         streak_row.addWidget(self._current_streak_label)
@@ -138,19 +164,20 @@ class DashboardWindow(QDialog):
         streak_row.addStretch()
         layout.addLayout(streak_row)
 
-        self._week_commits_label = QLabel()
+        self._week_commits_label = self._muted("")
         layout.addWidget(self._week_commits_label)
 
-        layout.addSpacing(8)
-        layout.addWidget(QLabel("System:"))
+        layout.addSpacing(theme.SPACING_MD)
+        layout.addWidget(self._header("System:"))
         self._system_label = QLabel()
         layout.addWidget(self._system_label)
 
-        layout.addSpacing(8)
-        layout.addWidget(QLabel("Pending reminders:"))
+        layout.addSpacing(theme.SPACING_MD)
+        layout.addWidget(self._header("Pending reminders:"))
         self._reminders_container = QWidget()
         self._reminders_layout = QVBoxLayout(self._reminders_container)
         self._reminders_layout.setContentsMargins(0, 0, 0, 0)
+        self._reminders_layout.setSpacing(theme.SPACING_XS)
         layout.addWidget(self._reminders_container)
 
         layout.addStretch()
@@ -163,6 +190,18 @@ class DashboardWindow(QDialog):
         layout.addLayout(close_row)
 
         self.refresh()
+
+    @staticmethod
+    def _header(text: str) -> QLabel:
+        label = QLabel(text)
+        theme.mark_section_header(label)
+        return label
+
+    @staticmethod
+    def _muted(text: str) -> QLabel:
+        label = QLabel(text)
+        theme.mark_muted_label(label)
+        return label
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -185,7 +224,8 @@ class DashboardWindow(QDialog):
         if self._app._is_away:
             state = "away"
         self._identity_label.setText(
-            f"<b>{self._app.cat_name}</b><br>"
+            f'<span style="color: {theme.ACCENT_PRESSED.name()}; font-size: 16px; '
+            f'font-weight: 600;">{self._app.cat_name}</span><br>'
             f"{state} &middot; running for {self._app._format_uptime()}"
         )
 
@@ -198,9 +238,11 @@ class DashboardWindow(QDialog):
 
         current = get_commit_streak(repo_path) if repo_path is not None else None
         self._current_streak_label.setText(
-            f"Current streak: {current} day(s)" if current is not None else "Current streak: --"
+            f"Current streak: <b>{current} day(s)</b>"
+            if current is not None
+            else "Current streak: --"
         )
-        self._best_streak_label.setText(f"Best streak: {longest_streak(dates)} day(s)")
+        self._best_streak_label.setText(f"Best streak: <b>{longest_streak(dates)} day(s)</b>")
 
         week_commits = count_commits_this_week(repo_path) if repo_path is not None else None
         self._week_commits_label.setText(
@@ -233,7 +275,7 @@ class DashboardWindow(QDialog):
 
         reminders = sorted_by_due(self._app.reminders)
         if not reminders:
-            self._reminders_layout.addWidget(QLabel("No pending reminders."))
+            self._reminders_layout.addWidget(self._muted("No pending reminders."))
             return
 
         now = time.time()
