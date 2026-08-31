@@ -58,6 +58,24 @@ from gitten.oneliners import (
     should_show_oneliner,
     should_show_rare_event,
 )
+from gitten.reminders import (
+    CANCEL_USAGE_REPLY,
+    DEFAULT_REMINDERS_PATH,
+    REMIND_USAGE_REPLY,
+    Reminder,
+    create_reminder,
+    due_reminders,
+    format_cancel_reply,
+    format_cancel_unknown_reply,
+    format_due_reply,
+    format_flushed_reminders_reply,
+    format_reminders_list,
+    format_set_reply,
+    load_reminders,
+    next_reminder_id,
+    parse_duration,
+    save_reminders,
+)
 from gitten.seasons import seasonal_accessory
 from gitten.sprite import paint_kitten
 from gitten.status_badge import StatusBadgeTracker
@@ -162,6 +180,12 @@ class GittenApp:
         # up to one system-tick interval.
         self._is_away = False
         self._away_since: float | None = None
+        # v1.10 reminders: loaded once at startup, persisted to
+        # ~/.gitten/reminders.json on every set/cancel/fire so they survive
+        # a restart. Deliberately keyed to wall-clock time (time.time()),
+        # not time.monotonic() like every other tracker's `now` above --
+        # see reminders.py's module docstring for why.
+        self.reminders = load_reminders(DEFAULT_REMINDERS_PATH)
         self.watcher = GitWatcher()
         self.window = KittenWindow()
         self.window.set_context_menu_callback(self._show_context_menu)
@@ -448,13 +472,16 @@ class GittenApp:
         self.window.set_badge(badge)
         self._check_idle()
         self._check_app_launch()
+        self._check_reminders()
 
     def _check_idle(self) -> None:
         """v1.8: real system-wide keyboard/mouse idle detection, piggybacked
         on the existing ~7s system-status timer rather than a new one, per
         the spec. Drives both the AWAY sleep pose (via `window.set_away`)
         and, on the away->active transition after a long-enough absence, the
-        welcome-back nudge."""
+        welcome-back nudge. v1.10 also flushes any reminders that came due
+        during the absence at this exact same transition point -- see
+        `_flush_due_reminders`."""
         idle_seconds = get_idle_seconds()
         now = time.monotonic()
         away_now = is_away(idle_seconds)
@@ -466,12 +493,65 @@ class GittenApp:
             self._away_since = now - idle_seconds
         elif not away_now and self._is_away and self._away_since is not None:
             absence = now - self._away_since
-            if absence >= WELCOME_BACK_THRESHOLD_SECONDS and self.window.view_mode == "pet":
+            flushed_reminders = self._flush_due_reminders()
+            # A flushed reminder is more meaningful, user-requested content
+            # than the ambient welcome-back line -- only show the generic
+            # message when there was nothing to flush, rather than racing
+            # two nudges into the single bubble slot.
+            if (
+                not flushed_reminders
+                and absence >= WELCOME_BACK_THRESHOLD_SECONDS
+                and self.window.view_mode == "pet"
+            ):
                 self.window.show_nudge(WELCOME_BACK_MESSAGE)
             self._away_since = None
 
         self._is_away = away_now
         self.window.set_away(away_now)
+
+    def _check_reminders(self) -> None:
+        """v1.10: checked on the same ~7s system-status tick as the badge/
+        idle/curiosity checks above, per the spec -- no new timer. Deliberately
+        does **not** apply `is_away` suppression the way `_check_app_launch`/
+        `_on_oneliner_timer`/`_on_mouse_spawn_timer` do for v1.8's ambient
+        personality touches: a reminder is something the user explicitly
+        asked for at a specific time, so while AWAY this just holds off
+        (leaving it in `self.reminders`, still due on every check) rather
+        than firing it into an empty room -- `_flush_due_reminders` (called
+        from `_check_idle`'s away->active transition) is what actually shows
+        it once someone's there to see it."""
+        if self._is_away:
+            return
+        due = due_reminders(self.reminders, time.time())
+        if due:
+            self._fire_reminders(due)
+
+    def _flush_due_reminders(self) -> bool:
+        """Fires any reminders that became due during an absence, reusing
+        the exact away->active transition point `_check_idle` already has
+        for the v1.8 welcome-back message, per the spec's explicit
+        instruction not to add a second hook for "the user just came back."
+        Returns True if anything was flushed, so `_check_idle` can skip the
+        generic welcome-back nudge in favor of this more specific one."""
+        due = due_reminders(self.reminders, time.time())
+        if not due:
+            return False
+        self._fire_reminders(due)
+        return True
+
+    def _fire_reminders(self, due: list[Reminder]) -> None:
+        """Shared by both firing paths above: removes the given (already-due)
+        reminders from the pending list, persists the change, and shows a
+        single reply through the existing nudge bubble -- the plain "due"
+        reply for one, or a combined listing if several came due at once
+        (e.g. several piling up during one absence)."""
+        due_ids = {r.id for r in due}
+        self.reminders = [r for r in self.reminders if r.id not in due_ids]
+        save_reminders(self.reminders, DEFAULT_REMINDERS_PATH)
+        if len(due) == 1:
+            self.window.show_nudge(format_due_reply(due[0]))
+        else:
+            self.window.show_nudge(format_flushed_reminders_reply(due))
 
     def _check_app_launch(self) -> None:
         """v1.6: piggybacks on the existing ~7s system-status timer rather
@@ -662,12 +742,52 @@ class GittenApp:
             if not already_chasing:
                 self._start_mouse_chase()
             return format_chase_reply(already_chasing=already_chasing)
+        if command == "remind":
+            return self._handle_remind_command(argument)
+        if command == "reminders":
+            return format_reminders_list(self.reminders, time.time())
+        if command == "cancel":
+            return self._handle_cancel_command(argument)
         if command == "help":
             return COMMANDS_HELP_TEXT
         if command == "quit":
             self.app.quit()
             return None
         return UNKNOWN_COMMAND_REPLY
+
+    def _handle_remind_command(self, argument: str) -> str:
+        """`remind <duration> <message>` -- parses the duration off the
+        front of `argument` via `reminders.parse_duration` (the same "pure
+        parsing returns a tuple" convention `commands.parse_command` already
+        established), and replies with the usage hint for either malformed
+        case (no valid duration token, or a duration with nothing after
+        it) rather than silently doing nothing, per the spec."""
+        seconds, message = parse_duration(argument)
+        message = message.strip()
+        if seconds is None or not message:
+            return REMIND_USAGE_REPLY
+        reminder = create_reminder(
+            next_reminder_id(self.reminders), message, seconds, time.time()
+        )
+        self.reminders.append(reminder)
+        save_reminders(self.reminders, DEFAULT_REMINDERS_PATH)
+        return format_set_reply(reminder.message, seconds)
+
+    def _handle_cancel_command(self, argument: str) -> str:
+        """`cancel <id>` -- the id shown by the `reminders` command."""
+        id_text = argument.strip()
+        if not id_text:
+            return CANCEL_USAGE_REPLY
+        try:
+            target_id = int(id_text)
+        except ValueError:
+            return format_cancel_unknown_reply(id_text)
+        match = next((r for r in self.reminders if r.id == target_id), None)
+        if match is None:
+            return format_cancel_unknown_reply(id_text)
+        self.reminders = [r for r in self.reminders if r.id != target_id]
+        save_reminders(self.reminders, DEFAULT_REMINDERS_PATH)
+        return format_cancel_reply(match)
 
     def run(self) -> int:
         return self.app.exec()

@@ -2620,7 +2620,243 @@ live-test script in this project that calls `watcher.set_repo(...)`:
 either call `watcher.stop()` at the end, or expect the process to hang
 around afterward.
 
-## 21. Working agreement for this project
+## 21. v1.10 -- reminders
+
+Input is `GITTEN_V1_10_SPEC.md`, built directly on top of v1.9's command
+bar: three new commands (`remind <duration> <message>`, `reminders`,
+`cancel <id>`) added to the existing `_dispatch_command` table rather than
+a parallel dispatch mechanism, per the spec's explicit "read
+DEVELOPMENT_NOTES.md first, in full" and "extend the existing table, don't
+parallel it" instructions -- both `GITTEN_V1_10_SPEC.md` and this whole
+file were read in full before writing any code, not just the most recent
+sections.
+
+### `reminders.py` -- pure logic + the JSON persistence boundary
+
+Same shape as every other pure module: a `Reminder` dataclass (`id`,
+`message`, `due_at`, `created_at`), `parse_duration(text) -> (seconds |
+None, remaining_text)` following `commands.parse_command`'s exact "pure
+parsing returns a tuple" convention (a regex requiring the first
+whitespace-separated token to be a number immediately followed by `s`/
+`m`/`h`, no space inside the token, no other units), `due_reminders(
+reminders, now) -> list[Reminder]` (`due_at <= now`, boundary inclusive),
+`next_reminder_id`/`create_reminder`, and a set of `format_*` reply
+functions mirroring `commands.py`'s existing formatter split (pure, take
+plain values, return display text) -- kept in `reminders.py` itself rather
+than moved into `commands.py`, the same way `notifications.format_notification`
+lives with `NotificationItem` rather than in some shared generic-formatter
+module. `load_reminders`/`save_reminders` (JSON, `~/.gitten/reminders.json`)
+live in this same file rather than a separate one, matching
+`distraction.py` (matching logic + `load_distraction_lists`) and
+`telegram_config.py` (`load_config`/`save_config`)'s established "pure
+decision + a small file-I/O boundary, same file" shape -- the spec's "no
+file I/O in the core logic" instruction is about keeping *decision* logic
+free of I/O, not a ban on I/O existing anywhere in the module, and this
+codebase has never drawn that line as a separate file before.
+
+**A clock choice worth being explicit about, since it's a real deviation
+from this codebase's usual convention**: every other pure module
+(`mood.py`, `attention.py`, `distraction.py`, ...) is fed `time.monotonic()`
+by its caller. Reminders can't use that -- they're persisted to disk and
+must still make sense after the app (or the machine) restarts, and
+`time.monotonic()`'s zero point is arbitrary per-process and meaningless
+across a restart. So every timestamp flowing through `reminders.py` is
+real wall-clock time (`time.time()`), and `main.py` is careful to pass
+`time.time()` everywhere it talks to this module, never `time.monotonic()`
+-- documented directly in the module's own docstring so a future session
+doesn't copy the wrong clock by habit from every other tracker in this
+codebase.
+
+**Id assignment recomputes from the current list** (`next_reminder_id =
+max(existing ids, default=0) + 1`) rather than tracking a separate running
+counter -- the same "recompute rather than track something that can drift"
+idiom `streak.py`/`count_commits_today` already established, and it means
+a cancelled reminder's id is never accidentally reused.
+
+**Testing**: new `tests/test_reminders.py`, 41 tests -- `parse_duration`
+(each unit, a decimal value, no message after the duration, a missing
+unit, non-numeric text, an unsupported unit, a space inside the token,
+empty input), `due_reminders` (none due, some due, the exact-boundary
+case, an empty list), id assignment and `create_reminder`, every
+formatter (including plural/singular phrasing for the flush reply and the
+usage-hint constants), and a full save/load persistence round-trip plus
+the missing-file/invalid-JSON/parent-directory-creation cases mirroring
+`test_telegram_config.py`'s existing shape for those exact scenarios.
+`pytest -q` -> **202/202 passed** (167 pre-existing + 35 new
+`test_reminders.py` tests).
+
+### Wiring: three new commands, plus updating `help`
+
+`_dispatch_command` gained `remind`/`reminders`/`cancel` branches
+following the exact pattern already established for `streak`/`commits`/
+`chase`: thin glue here, the real decision in `reminders.py`.
+`remind`/`cancel` needed slightly more glue than a one-liner (parsing,
+validating, mutating `self.reminders`, persisting) so each got its own
+small helper method (`_handle_remind_command`/`_handle_cancel_command`),
+the same "extract when there's real logic, inline when it's one call"
+judgment call already applied to `rename`'s `_apply_rename` extraction in
+v1.9. Both malformed-input paths (`remind` with no duration, `remind 10m`
+with no message, `cancel` with no id or an unknown id) return the
+usage-hint reply rather than silently doing nothing, per the spec's
+explicit callback to the existing "never silently do nothing" rule
+(`rename` with no argument, any unrecognized command). `COMMANDS_HELP_TEXT`
+(`commands.py`) now lists all three new commands alongside the existing
+six.
+
+`self.reminders = load_reminders(DEFAULT_REMINDERS_PATH)` is loaded once
+at `GittenApp.__init__`, right next to the other tracker state; every
+mutation (`remind`, a successful `cancel`, or a fire/flush) immediately
+calls `save_reminders(...)` afterward, so nothing is ever left dirty in
+memory relative to disk -- a crash or force-quit between two commands
+never loses more than the single most recent change, matching the spec's
+"save whenever the list changes" instruction literally.
+
+### Firing: reused the existing tick, and the deliberate away exception
+
+`_check_reminders()` is called from the existing `_on_system_tick` (the
+same ~7s timer already driving the badge/idle/curiosity checks), per the
+spec's explicit "no new timer" instruction -- there wasn't one single
+timer that literally drives badge *and* streak *and* idle as the spec's
+wording suggested (badge/idle/curiosity are on the 7s system tick; streak
+is on a separate 5s tick), so this was hooked into the 7s one specifically
+because that's also where `_check_idle` (and its away->active transition
+hook) already lives, which this feature needs to share directly.
+
+**The deliberate exception, implemented exactly as specced and worth
+restating plainly**: v1.8 suppressed one-liners, curiosity, and the
+mouse-chase spawn while `AWAY`, because those are ambient personality
+touches nobody benefits from seeing with nobody there to see them. A
+reminder is the opposite case -- the user explicitly asked for it at a
+specific time, so `_check_reminders()` does **not** thread an `is_away`
+suppression parameter into anything the way `should_show_oneliner`/
+`should_spawn_mouse`/`should_react_to_new_launch` do. Instead:
+
+- **Due while present** (`self._is_away is False`): `_check_reminders()`
+  fires it immediately via `_fire_reminders()`, exactly like every other
+  command reply -- removed from `self.reminders`, persisted, shown via
+  `window.show_nudge(...)`.
+- **Due while `AWAY`**: `_check_reminders()` returns immediately without
+  touching anything -- the reminder stays in `self.reminders`, still due
+  on every subsequent tick, never removed and never shown, until someone's
+  actually there to see it.
+- **The away->active transition**: `_check_idle()` (v1.8's existing hook,
+  reused rather than adding a second "the user just came back" check, per
+  the spec) now also calls a new `_flush_due_reminders()` at exactly the
+  same point the welcome-back message already fires from. This recomputes
+  `due_reminders(self.reminders, time.time())` fresh (not relying on
+  whatever `_check_reminders()` last saw, since that could be stale by up
+  to the ~7s tick interval) and fires all of them through the same
+  `_fire_reminders()` helper both paths share -- one reply if exactly one
+  came due, a combined "N reminders came due: ..." reply
+  (`format_flushed_reminders_reply`) if several piled up during one
+  absence, since the nudge bubble can only hold one message at a time and
+  there's no queue.
+
+**A precedence call this session had to make, not specified by the spec
+in this much detail**: what happens when the away->active transition
+*also* would have shown v1.8's generic welcome-back message (a long-enough
+absence)? Decided that a flushed reminder -- concrete, user-requested
+content -- wins over the ambient "خوش برگشتی" line, rather than trying to
+show both back-to-back or letting them race for the one nudge slot:
+`_check_idle` only shows the generic welcome-back message when
+`_flush_due_reminders()` returns `False` (nothing was pending to flush).
+A short absence with a due reminder still flushes it even though it's
+below the 30-minute welcome-back threshold -- that threshold was always
+specifically about not nagging with an *ambient* greeting on every short
+break, which has nothing to do with a reminder the user actually set.
+
+**`_fire_reminders(due)` is the one shared helper both paths call**,
+avoiding a second copy of the "remove from the list, persist, pick single-
+vs-combined reply" logic -- consistent with this codebase's standing
+"reuse existing mechanisms rather than duplicate them" discipline applied
+one level further than the spec's own letter (the spec only asked for the
+present-vs-away distinction, not that the two firing *call sites* share
+code, but doing so was the obviously simpler and more maintainable choice
+once both needed nearly identical logic).
+
+### Testing
+
+`pytest -q` -> **202/202 passed** (167 pre-existing + 35 new
+`test_reminders.py` + a `test_commands.py` update extending the existing
+help-text-mentions-every-command test to cover `remind`/`reminders`/
+`cancel` too, no new file needed there since it was already parametrized
+over command names).
+
+**Dispatch wiring, live against a real `GittenApp`, not a mock** (per the
+spec's explicit "the same way v1.9's Part 2 was verified" instruction): a
+scratch script drove `_dispatch_command` directly through a full, real
+lifecycle -- both malformed `remind` cases (no duration, duration with no
+message, non-numeric duration) correctly returned the usage hint and
+created nothing; a real `remind 10m take a break` returned the exact
+expected confirmation text, appeared in `self.reminders`, and was
+genuinely persisted to the real `~/.gitten/reminders.json` on disk (read
+back and printed to confirm, not just asserted in memory); a second
+reminder got id `2`; `reminders` listed both, correctly sorted by
+soonest-due rather than insertion order; `cancel` with no id and with an
+unknown id (`999`) both returned their usage/unknown-id replies without
+touching the pending list; a real `cancel 1` removed exactly that one and
+returned its confirmation; cancelling the same id again afterward cleanly
+reported it unknown (proving the removal was real, not a no-op); and
+`help` now lists all three new commands. The test-created
+`~/.gitten/reminders.json` (this machine had no pre-existing one) was
+removed afterward so this session doesn't leave a stray file behind for
+the real app -- confirmed via `ls` before writing anything to it and `rm
+-rf ~/.gitten` after.
+
+**The away-hold-and-flush timing -- the one genuinely new piece of timing
+logic this round adds -- verified live and specifically, per the spec's
+explicit instruction not to leave this one only unit-tested**: using the
+same "monkeypatch `gitten.main.get_idle_seconds` -- a plain Python
+function reference, not a compiled Qt/Shiboken method" technique v1.8's
+own live test already established as safe in this codebase (see section
+19), against a real, fully-wired `GittenApp`:
+
+1. Forced a real away transition (`get_idle_seconds` returning 700s, over
+   the 600s threshold) via a real `_check_idle()` call -- confirmed
+   `self._is_away`/`window._away` both flipped to `True`.
+2. Set a real reminder due in 2 real seconds (`remind 2s some task`) while
+   already away, waited for real wall-clock time to actually pass it, then
+   called the real `_check_reminders()` -- confirmed `window._nudge_text`
+   stayed `None` and the reminder was still sitting in `self.reminders`,
+   proving it did **not** fire into the nudge bubble while away. Called
+   `_check_reminders()` a second time to confirm repeated away-ticks don't
+   do anything different either (no partial state, no accidental firing on
+   a later poll).
+3. Flipped `get_idle_seconds` back to `0.0` and called the real
+   `_check_idle()` again -- confirmed the away->active transition fired
+   exactly then: `window._nudge_text` became `"⏰ some task"`,
+   `self.reminders` emptied, and `self._is_away`/`window._away` both
+   correctly flipped back to `False`.
+4. Two further live checks, each in its own fresh process (a `QApplication`
+   is a process-wide singleton -- confirmed the hard way, a first attempt
+   at running both in one script crashed with `RuntimeError: libshiboken:
+   Please destroy the QApplication singleton before creating a new
+   QApplication instance` on the second `GittenApp()`): a reminder due
+   while genuinely present fires immediately on the very next
+   `_check_reminders()` tick, no waiting for any transition; and two
+   reminders piling up during one simulated absence flush together as a
+   **single combined** reply (`"while you were away, 2 reminders came
+   due: first; second"`) at the transition, not one bubble each,
+   confirming `_fire_reminders`'s single-vs-combined branching is what
+   actually runs, not just reasoned about.
+5. A regression check confirmed v1.8's own welcome-back message is
+   completely unaffected when there's nothing to flush: a long simulated
+   absence (`_away_since` backdated well past the 30-minute threshold)
+   with zero pending reminders still produced the original
+   `"خوش برگشتی 🙂"` message exactly as before this session's changes to
+   `_check_idle`.
+
+All scratch scripts' `~/.gitten` test artifacts were removed afterward and
+`tasklist` was checked clean after every run, avoiding a repeat of the
+zombie-process lesson recorded earlier this same round (section 20's
+bugfix entry) and originally in section 4.
+
+With this, all four parts of v1.10 (pure logic, persistence, the three new
+commands, and the away-hold-and-flush firing behavior) are implemented,
+tested, and documented, and the settings panel / dashboard rounds the spec
+mentions can now build on real, persisted reminder data.
+
+## 22. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was

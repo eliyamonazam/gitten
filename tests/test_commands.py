@@ -108,7 +108,18 @@ def test_chase_reply_already_chasing():
 
 
 def test_help_text_mentions_every_command():
-    for name in ("streak", "commits", "battery", "rename", "chase", "help", "quit"):
+    for name in (
+        "streak",
+        "commits",
+        "battery",
+        "rename",
+        "chase",
+        "remind",
+        "reminders",
+        "cancel",
+        "help",
+        "quit",
+    ):
         assert name in COMMANDS_HELP_TEXT
 
 

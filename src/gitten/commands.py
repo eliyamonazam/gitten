@@ -11,7 +11,10 @@ decision is pulled out here where it's cleanly testable in isolation.
 
 from __future__ import annotations
 
-COMMANDS_HELP_TEXT = "commands: streak, commits, battery, rename <name>, chase, help, quit"
+COMMANDS_HELP_TEXT = (
+    "commands: streak, commits, battery, rename <name>, chase, "
+    "remind <duration> <message>, reminders, cancel <id>, help, quit"
+)
 UNKNOWN_COMMAND_REPLY = "didn't understand that, try `help`"
 
 
