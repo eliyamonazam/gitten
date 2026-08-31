@@ -49,6 +49,10 @@ _HOVER_PURR_DELAY_MS = 200
 
 _HIGH_FIVE_DURATION_SECONDS = 1.3
 
+# v1.6: how long the "curious" reaction (a new program was just detected
+# launching) stays on screen before self-clearing back to normal.
+_CURIOSITY_DURATION_SECONDS = 2.0
+
 # Shown in the inbox view for the two distinct "nothing to show" causes the
 # v1.2 spec calls out -- kept as plain strings (not exceptions) so
 # `set_inbox_items` can't be misused to smuggle a real error through.
@@ -115,6 +119,7 @@ class KittenWindow(QWidget):
         self._click_pending_timer.timeout.connect(self._on_click_confirmed_single)
         self._just_double_clicked = False
         self._high_fiving = False
+        self._curious = False
 
         self._view_mode = "pet"  # or "inbox"
         self._attention_state = AttentionState.NORMAL
@@ -229,6 +234,18 @@ class KittenWindow(QWidget):
             dx=dx,
             dy=dy,
         )
+
+    def trigger_curiosity(self) -> None:
+        """A brief (~2s), self-clearing "curious" reaction -- same boolean
+        flag + QTimer.singleShot idiom as `_trigger_high_five` -- played
+        when `main.py` detects a genuinely new program was just opened."""
+        self._curious = True
+        self.update()
+        QTimer.singleShot(int(_CURIOSITY_DURATION_SECONDS * 1000), self._clear_curiosity)
+
+    def _clear_curiosity(self) -> None:
+        self._curious = False
+        self.update()
 
     def set_context_menu_callback(self, callback) -> None:
         self._context_menu_requested_callback = callback
@@ -356,6 +373,7 @@ class KittenWindow(QWidget):
             high_five=self._high_fiving,
             accessory=self._accessory,
             night=is_night_time(datetime.now().hour),
+            curious=self._curious,
         )
 
     def enterEvent(self, event) -> None:

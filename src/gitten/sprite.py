@@ -10,6 +10,7 @@ seconds, and it draws one animated frame.
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
@@ -65,6 +66,7 @@ def paint_kitten(
     high_five: bool = False,
     accessory: str | None = None,
     night: bool = False,
+    curious: bool = False,
 ) -> None:
     painter.save()
     painter.setRenderHint(QPainter.Antialiasing, True)
@@ -82,28 +84,51 @@ def paint_kitten(
 
     center = QPointF(CENTER.x() + jitter_x, CENTER.y() + bob)
 
-    # "Purring" (mouse hovering) and "focused" (a test/build process running)
-    # are both standalone reactions layered independently of git mood.
-    # Sulking still wins over both -- a cat mid-sulk doesn't warm up just
-    # because the cursor is over it or a test happens to be running -- and
-    # between the two, a live hover is a more immediate, direct signal than
-    # a passive background test run, so purring additionally wins over
-    # focused whenever both happen to be true at once. (`view_mode == "pet"`
+    # "Purring" (mouse hovering), "curious" (a new program was just
+    # launched -- v1.6), and "focused" (a test/build process running) are
+    # all standalone reactions layered independently of git mood. Sulking
+    # still wins over all three -- a cat mid-sulk doesn't warm up just
+    # because the cursor is over it, something new opened, or a test
+    # happens to be running. Among the three: a live hover is the most
+    # immediate, direct signal (a hand on the cat right now), so it wins
+    # over both of the other two, matching the existing hover-vs-focused
+    # precedent from v1.5. Between curious and focused specifically: noticing
+    # a brand new program appear is a discrete, momentary event (it
+    # self-clears after ~2s, see window.py), while focused is a passive,
+    # potentially long-running "something is happening in the background"
+    # state -- a fresh, surprising thing happening right now reads as more
+    # attention-grabbing than continuing to watch an already-running test,
+    # so curious wins over focused whenever both are true at once. Verified
+    # concretely (not just reasoned about) via a pixel-diff in this
+    # feature's own dev-notes section: curious+focused renders identically
+    # to curious-alone, and differs from focused-alone. (`view_mode == "pet"`
     # isn't threaded through as its own parameter here -- `window.py`'s
     # `paintEvent` already returns early without calling `paint_kitten` at
     # all while the inbox view is showing, so it's already guaranteed true
     # by the time this function runs.)
     show_purr = hovering and turn_stage is None
-    show_focused = focused and turn_stage is None and not show_purr
+    show_curious = curious and turn_stage is None and not show_purr
+    show_focused = focused and turn_stage is None and not show_purr and not show_curious
 
     _draw_shadow(painter, center)
     _draw_tail(painter, center, tail_phase)
-    _draw_ears(painter, center, breathe, perked=show_focused, wiggle=show_purr, t=t)
+    if show_curious:
+        # A brief head-tilt (ears + face rotated together around the head's
+        # own center, body/tail left alone) is what makes "curious" read as
+        # "noticing something new" rather than a near-duplicate of
+        # "focused"'s straight-ahead perked-ears stare.
+        with _head_tilt(painter, center, _CURIOSITY_TILT_DEGREES):
+            _draw_ears(painter, center, breathe, perked=True, wiggle=False, t=t)
+    else:
+        _draw_ears(painter, center, breathe, perked=show_focused, wiggle=show_purr, t=t)
     _draw_body(painter, center, breathe, night=night)
     if turn_stage is not None:
         _draw_face_turned(painter, center, turn_stage, t)
     elif show_purr:
         _draw_purr_face(painter, center, t)
+    elif show_curious:
+        with _head_tilt(painter, center, _CURIOSITY_TILT_DEGREES):
+            _draw_curious_face(painter, center, t)
     elif show_focused:
         _draw_focused_face(painter, center, t)
     else:
@@ -388,6 +413,61 @@ def _draw_focused_face(painter: QPainter, center: QPointF, t: float) -> None:
     mouth_y = center.y() + 10
     painter.setPen(_outline_pen(2.0))
     painter.drawLine(QPointF(center.x() - 4, mouth_y), QPointF(center.x() + 4, mouth_y))
+    painter.restore()
+
+
+# "Curious" (v1.6): a new program was just detected launching. Perked ears
+# like "focused", but rotated together with the face around the head's own
+# center -- a head-tilt -- which is what actually keeps this from reading as
+# a near-duplicate of the focused stare.
+_CURIOSITY_TILT_DEGREES = 14.0
+
+
+@contextmanager
+def _head_tilt(painter: QPainter, center: QPointF, degrees: float):
+    """Rotate everything drawn inside the block by `degrees` around
+    `center`, then restore -- used to tilt just the ears+face (not the
+    body/tail, which are drawn outside this block) for the curiosity
+    reaction."""
+    painter.save()
+    try:
+        painter.translate(center)
+        painter.rotate(degrees)
+        painter.translate(-center.x(), -center.y())
+        yield
+    finally:
+        painter.restore()
+
+
+def _draw_curious_face(painter: QPainter, center: QPointF, t: float) -> None:
+    """Wide eyes with pupils held steadily off to one side (looking at
+    whatever just appeared) and a small round, open "o" mouth -- distinct
+    from FOCUSED's fixed-dead-ahead pupils and flat mouth (watching
+    intently) and from WAITING's side-to-side glancing and wavy worried
+    mouth (anxious). Paired with the caller's head-tilt, this reads as
+    "noticing something new" rather than either of those."""
+    painter.save()
+    eye_y = center.y() - 3
+    pupil_shift = 3.0
+
+    for side in (-1, 1):
+        ex = center.x() + side * 11
+        eye_rect = QRectF(0, 0, 11, 11)
+        eye_rect.moveCenter(QPointF(ex, eye_y))
+        painter.setPen(_outline_pen(1.8))
+        painter.setBrush(WHITE)
+        painter.drawEllipse(eye_rect)
+
+        pupil_rect = QRectF(0, 0, 4.6, 4.6)
+        pupil_rect.moveCenter(QPointF(ex + pupil_shift, eye_y))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(OUTLINE_COLOR)
+        painter.drawEllipse(pupil_rect)
+
+    mouth_y = center.y() + 10
+    painter.setPen(_outline_pen(1.8))
+    painter.setBrush(WHITE)
+    painter.drawEllipse(QPointF(center.x(), mouth_y), 2.6, 2.6)
     painter.restore()
 
 

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 import psutil
 
+from gitten.app_launch import DEFAULT_COOLDOWN_SECONDS, should_react_to_new_launch
 from gitten.attention import AttentionState, AttentionTracker, turn_stage
 from gitten.distraction import (
     DEFAULT_CONFIG_PATH,
@@ -43,6 +44,7 @@ from gitten.seasons import seasonal_accessory
 from gitten.sprite import paint_kitten
 from gitten.status_badge import StatusBadgeTracker
 from gitten.system_monitor import is_focus_process_running, sample_system
+from gitten.visible_windows import get_visible_window_pids
 from gitten.window import INBOX_ACCESS_NOT_GRANTED, INBOX_UNAVAILABLE, KittenWindow
 
 ORG_NAME = "Gitten"
@@ -105,6 +107,13 @@ class GittenApp:
             DEFAULT_CONFIG_PATH
         )
         self.focus_substrings = load_focus_substrings(DEFAULT_FOCUS_CONFIG_PATH)
+        # v1.6 curiosity reaction: an empty baseline until the first system
+        # tick actually polls -- should_react_to_new_launch treats an empty
+        # previous-PID set as "establish the baseline, don't react", so the
+        # very first poll never mistakes every already-running program for
+        # a simultaneous new launch.
+        self._known_window_pids: set[int] = set()
+        self._last_curiosity_reaction_at: float | None = None
         self.watcher = GitWatcher()
         self.window = KittenWindow()
         self.window.set_context_menu_callback(self._show_context_menu)
@@ -353,6 +362,23 @@ class GittenApp:
             disk_percent=sample.disk_percent,
         )
         self.window.set_badge(badge)
+        self._check_app_launch()
+
+    def _check_app_launch(self) -> None:
+        """v1.6: piggybacks on the existing ~7s system-status timer rather
+        than adding a new one, per the spec."""
+        now = time.monotonic()
+        current_pids = get_visible_window_pids()
+        if should_react_to_new_launch(
+            self._known_window_pids,
+            current_pids,
+            self._last_curiosity_reaction_at,
+            now,
+            cooldown=DEFAULT_COOLDOWN_SECONDS,
+        ):
+            self._last_curiosity_reaction_at = now
+            self.window.trigger_curiosity()
+        self._known_window_pids = current_pids
 
     def _on_interacted(self) -> None:
         self.attention_tracker.register_interaction(now=time.monotonic())

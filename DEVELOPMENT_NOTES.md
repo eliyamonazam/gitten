@@ -1603,7 +1603,155 @@ treatment of `GITTEN_V1_4_SPEC.md`).
 Committed separately from any code change, per the brief's explicit
 instruction, and pushed to `origin/main`.
 
-## 16. Working agreement for this project
+## 16. v1.6 -- curiosity reaction on new app launch
+
+Input is `GITTEN_V1_6_SPEC.md`. One feature: react when the user opens a
+genuinely new program, defined precisely by the spec as a new process that
+owns a visible, titled top-level window -- not every OS process (Windows
+constantly spawns invisible background/helper processes) and not a new
+window/tab inside an already-running app (no new process in the tracked
+sense).
+
+### `visible_windows.py` -- the win32 I/O boundary
+
+New thin wrapper, same discipline as `foreground_window.py`: `win32gui.
+EnumWindows` visits every top-level window, keeping only those that pass
+both `IsWindowVisible` and a non-empty `GetWindowText`, resolves each to its
+owning PID via `win32process.GetWindowThreadProcessId` (the same call
+`foreground_window.py` already uses), and returns the set of distinct PIDs
+with `os.getpid()` (Gitten's own process) excluded so it can never react to
+itself. Guarded by the same top-level `try/except ImportError` pattern as
+every other win32-touching module, returning an empty set on non-Windows.
+
+### `app_launch.py` -- the pure decision, and the first-poll baseline case
+
+`should_react_to_new_launch(previous_pids, current_pids, last_reaction_at,
+now, cooldown=10.0)` follows the exact discipline every pure module in this
+project uses: no Qt, no win32, the clock and PID sets all passed in by the
+caller. A reaction is due when `current_pids - previous_pids` is non-empty
+**and** the cooldown since the last reaction has elapsed (or there's never
+been one) -- the cooldown exists so starting up a whole workspace at once
+doesn't fire once per program.
+
+**The first-poll baseline case, called out explicitly by the task**: an
+empty `previous_pids` is treated as "no baseline established yet" and
+always returns `False`, regardless of how many PIDs are in `current_pids`.
+Without this, the very first poll after startup would see every already-
+running program on the user's machine as a simultaneous new launch and
+fire (at minimum) one reaction immediately -- exactly the noisy, wrong
+behavior the spec warned against. `main.py` seeds `self._known_window_pids
+= set()` at construction and simply always records whatever
+`get_visible_window_pids()` returns after each check (whether or not it
+reacted), so the *second* poll onward has a real baseline to diff against.
+Verified both as a unit test (`test_empty_previous_set_on_first_poll_does_
+not_react`, asserting `False` even with 5 fabricated "already open" PIDs
+against an empty previous set) and live (see Testing below): a real
+`GittenApp`'s first `_check_app_launch()` call, on this actual development
+machine with its actual ~10 real visible windows already open, produced no
+reaction at all -- not a synthetic scenario, the real desktop state.
+
+### Reaction: a head-tilt, not just perked ears
+
+The spec was explicit that "curious" needed to be genuinely distinguishable
+from the existing `focused` (test/build) overlay side by side, not a near-
+duplicate, even though both call for perked ears. The distinguishing touch:
+a `_head_tilt` context manager (new in `sprite.py`) rotates the painter
+around the head's own center (`center`, not the canvas origin) for exactly
+the ears + face drawing calls, leaving the body/tail undisturbed -- so the
+head visibly cocks to one side while the body stays put, reading as
+"noticing something new" rather than "watching intently." `_draw_curious_
+face` also differs from `_draw_focused_face` on its own merits, not just
+the tilt: eyes with pupils held steadily off to one side (looking at
+whatever just appeared) instead of `focused`'s fixed-dead-ahead pulsing
+pupils, and a small round open "o" mouth instead of `focused`'s flat line
+-- distinct from `WAITING`'s side-to-side glancing and wavy worried mouth
+too. `trigger_curiosity()` (`window.py`) is the same "boolean flag +
+`QTimer.singleShot` to clear it" idiom as `_trigger_high_five`, self-
+clearing after 2 seconds per the spec.
+
+**Precedence, decided and verified concretely rather than just reasoned
+about, per the spec's explicit instruction**: sulking and the inbox view
+suppress curiosity entirely, same as every other overlay (`turn_stage is
+None`, and `view_mode == "pet"` already guaranteed by `window.py`'s
+early-return in `paintEvent`, exactly as documented for `show_purr`/
+`show_focused` in v1.5). Between the three standalone reactions: hovering
+still wins over everything (a hand on the cat right now is the most
+immediate signal, matching the existing v1.5 hover-vs-focused precedent),
+and **curious wins over focused** -- reasoning: curiosity is a discrete,
+momentary, self-clearing event (2s) representing something genuinely new
+just happening, while focused is a passive, potentially long-running
+"something's already in progress" state; a fresh surprise reads as more
+attention-grabbing than continuing to watch an already-running test.
+Verified with a pixel-diff, not just reasoning: `curious+focused` renders
+**identically** (0 differing pixels) to `curious`-alone and differs from
+`focused`-alone (2,067 differing pixels); `curious+hovering` renders
+identically to `hovering`-alone (0 differing pixels) and differs from
+`curious`-alone (1,845 differing pixels), confirming hover wins over
+curious; `curious+turn_stage=1` renders identically to `turn_stage=1`-alone
+(0 differing pixels), confirming sulking fully suppresses it.
+
+### Wiring: reused the existing system-status timer, per the spec
+
+`main.py`'s `_on_system_tick` (already firing every `SYSTEM_SAMPLE_
+INTERVAL_MS` = 7s for the battery/CPU/disk badge) now also calls a new
+`_check_app_launch()` -- no new `QTimer`, per the spec's explicit "poll on
+the existing ~5-10s system-status timer rather than adding a new one."
+`_check_app_launch` calls `get_visible_window_pids()`, feeds it and
+`self._known_window_pids`/`self._last_curiosity_reaction_at` through
+`should_react_to_new_launch`, calls `self.window.trigger_curiosity()` if
+it's `True`, and unconditionally updates `self._known_window_pids` to the
+current snapshot regardless of whether it reacted.
+
+### Testing
+
+`pytest -q` -> **122/122 passed** (114 pre-existing + 8 new
+`test_app_launch.py` tests: no new PIDs, PIDs disappearing, a new PID
+within cooldown, a new PID after cooldown, a new PID with no prior reaction
+at all, the cooldown boundary being inclusive of exactly-elapsed, the
+first-poll empty-baseline case described above, and the default cooldown
+constant).
+
+**Live, not just off-screen, per the task's explicit instruction** -- and
+this session had a real interactive desktop available (confirmed early on:
+`tasklist` showed two real, already-running `python -m gitten.main`
+processes on this machine, left over from the user's own prior use rather
+than anything this session started -- left untouched rather than killed,
+since they weren't this session's to clean up):
+
+1. Called the real `get_visible_window_pids()` for a baseline, then
+   launched a real `notepad.exe` subprocess and polled until its actual PID
+   appeared in the enumeration (it did, within a second) -- confirmed with
+   `should_react_to_new_launch` that this real transition would trigger a
+   reaction. Terminated the notepad process afterward.
+2. Confirmed self-exclusion for real: created a real, visible, titled
+   `QWidget` from inside the test's own process and confirmed `os.getpid()`
+   never appears in `get_visible_window_pids()`'s result even though that
+   window is genuinely visible and titled -- proving the exclusion isn't
+   just a no-op because Gitten's own real window (borderless, no title)
+   happens to already fail the title check.
+3. Built a real, fully-wired `GittenApp` (`QT_QPA_PLATFORM=offscreen` for
+   the Qt side, but every win32 call for real) and called
+   `_check_app_launch()` for the first time on this actual machine's actual
+   ~10-11 already-open real windows -- confirmed zero reaction (the
+   first-poll baseline case, proven against real desktop state, not a
+   fabricated PID set).
+4. Launched another real `notepad.exe` after that baseline was established
+   and polled the same live `GittenApp._check_app_launch()` -- confirmed
+   `window._curious` flips to `True`.
+5. Launched a third real `notepad.exe` one second later and confirmed the
+   10-second cooldown correctly suppressed a second reaction
+   (`_last_curiosity_reaction_at` unchanged).
+6. Let real wall-clock time pass with `app.processEvents()` pumped (the
+   same technique used to verify v1.5's hover-purr delay, since this is a
+   genuine `QTimer` tied to real elapsed time, not an injectable fake
+   clock) and confirmed `window._curious` self-clears back to `False`
+   after ~2 seconds.
+
+All spawned `notepad.exe` processes were terminated by the test script
+itself; confirmed via `tasklist` afterward that no stray notepad or Python
+processes were left behind beyond the two pre-existing ones noted above.
+
+## 17. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was
