@@ -1848,7 +1848,44 @@ that `walk_cancelled` is correctly scoped to drags, not "any interaction").
 `pytest -q` re-run after this part: unchanged at **122/122 passed** (Qt
 wiring only, no new pure-logic module yet).
 
-(Parts 2-4 continue in the sections below, added as each was actually
+### Part 2: A second small window for the mouse (`mouse_window.py`), built and verified alone next
+
+New `MouseWindow(QWidget)` copies `KittenWindow`'s window-flag setup
+verbatim (`Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool |
+Qt.WindowDoesNotAcceptFocus`, `Qt.WA_TranslucentBackground`,
+`Qt.WA_ShowWithoutActivating`) per the spec's explicit "no new window-flag
+research needed" instruction -- literally copied, not re-derived. It
+carries none of `KittenWindow`'s interaction logic (no drag, no click
+handling, no view modes, no context menu): just `show_at(x, y)` (move +
+show) and its own small ~30fps `QTimer` purely so the sprite's gentle
+breathing animation has a `t` to animate against, reusing the same idiom
+`KittenWindow` already uses for its own animation clock.
+
+**`paint_mouse` (`sprite.py`)**, alongside `paint_kitten`: a small gray
+rodent in the same minimal QPainter-primitives style, drawn in its own
+64x64 logical canvas (mirroring `paint_kitten`'s 128x128-canvas-plus-
+scale-transform pattern) -- an oval body with the same gentle breathing
+sine-wave idiom used everywhere else in this codebase, two small round
+ears, two black dot eyes, and a thin curved tail (a `QPainterPath` cubic,
+the same technique `_draw_tail` already uses for the kitten's own tail).
+Exactly the four elements the spec asked for, nothing extra (no nose or
+whiskers) -- a single gently-breathing pose is enough per the spec, no
+separate animation states needed. Visually confirmed by rendering it
+directly to a `QPixmap` and looking at it before wiring anything further.
+
+**Tested live, on its own, before Part 3 existed**: a real `MouseWindow`
+instance -- confirmed its `windowFlags()`/`testAttribute(...)` match a real
+`KittenWindow`'s exactly (not just "close enough", an actual equality
+check against a real instance of each), confirmed `show_at(x, y)`
+genuinely moves and shows a real widget at that exact position
+(`isVisible()` true, `pos()` exact), and called `.grab()` (a real render of
+the live widget, the same "don't just trust an off-screen `paint_kitten`
+call" standard this project has used since v1.5) to confirm `paint_mouse`
+doesn't throw and actually paints real, non-transparent pixels (541 out of
+2304 in the grabbed image). `pytest -q` re-run after this part: unchanged
+at **122/122 passed** (still no new pure-logic module).
+
+(Parts 3-4 continue in the sections below, added as each was actually
 built and verified.)
 
 ## 19. Working agreement for this project

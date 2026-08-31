@@ -960,3 +960,98 @@ def _draw_high_five_paw(painter: QPainter, center: QPointF, t: float) -> None:
         toe = QPointF(paw_x + dx, paw_y - pad_radius + 1.5)
         painter.drawEllipse(toe, 2.2, 2.2)
     painter.restore()
+
+
+# -- mouse (v1.7 chase minigame) --------------------------------------------
+# A separate, much simpler sprite for `mouse_window.py`'s small companion
+# widget -- its own small logical canvas (mirroring `paint_kitten`'s
+# canvas-plus-scale-transform pattern), no mood/state of its own, just a
+# single gently-breathing pose per the spec.
+
+MOUSE_CANVAS = 64.0
+_MOUSE_CENTER = QPointF(MOUSE_CANVAS / 2, MOUSE_CANVAS / 2 + 4)
+_MOUSE_BODY_COLOR = QColor("#9E9E9E")
+_MOUSE_BODY_HIGHLIGHT = QColor("#BDBDBD")
+_MOUSE_BODY_RX, _MOUSE_BODY_RY = 15.0, 11.0
+
+
+def paint_mouse(painter: QPainter, rect: QRectF, t: float) -> None:
+    """Draws the mouse (rodent) sprite for the v1.7 chase minigame: a small
+    oval body, a thin curved tail, two small round ears, two dot eyes --
+    exactly the elements the spec asked for, nothing more. A single gentle
+    breathing animation (the same sine-wave idiom used throughout this
+    codebase) is enough; it has no mood or interaction states of its own."""
+    painter.save()
+    painter.setRenderHint(QPainter.Antialiasing, True)
+
+    scale = min(rect.width(), rect.height()) / MOUSE_CANVAS
+    painter.translate(rect.center())
+    painter.scale(scale, scale)
+    painter.translate(-MOUSE_CANVAS / 2, -MOUSE_CANVAS / 2)
+
+    breathe = 1.0 + 0.02 * math.sin(t * 2.4)
+    center = _MOUSE_CENTER
+
+    _draw_mouse_tail(painter, center)
+    _draw_mouse_ears(painter, center)
+    _draw_mouse_body(painter, center, breathe)
+    _draw_mouse_face(painter, center)
+
+    painter.restore()
+
+
+def _draw_mouse_body(painter: QPainter, center: QPointF, breathe: float) -> None:
+    painter.save()
+    rect = QRectF(0, 0, _MOUSE_BODY_RX * 2, _MOUSE_BODY_RY * 2 * breathe)
+    rect.moveCenter(center)
+
+    gradient = QRadialGradient(
+        QPointF(center.x() - _MOUSE_BODY_RX * 0.35, center.y() - _MOUSE_BODY_RY * 0.5),
+        _MOUSE_BODY_RX * 1.6,
+    )
+    gradient.setColorAt(0.0, _MOUSE_BODY_HIGHLIGHT)
+    gradient.setColorAt(1.0, _MOUSE_BODY_COLOR)
+
+    painter.setPen(_outline_pen(2.0))
+    painter.setBrush(gradient)
+    painter.drawEllipse(rect)
+    painter.restore()
+
+
+def _draw_mouse_ears(painter: QPainter, center: QPointF) -> None:
+    painter.save()
+    painter.setPen(_outline_pen(1.8))
+    painter.setBrush(_MOUSE_BODY_HIGHLIGHT)
+    ear_y = center.y() - _MOUSE_BODY_RY * 0.95
+    for side in (-1, 1):
+        ex = center.x() + side * _MOUSE_BODY_RX * 0.55
+        painter.drawEllipse(QPointF(ex, ear_y), 6.5, 6.5)
+    painter.restore()
+
+
+def _draw_mouse_tail(painter: QPainter, center: QPointF) -> None:
+    painter.save()
+    pen = _outline_pen(1.6)
+    pen.setColor(OUTLINE_COLOR)
+    painter.setPen(pen)
+
+    base = QPointF(center.x() + _MOUSE_BODY_RX * 0.8, center.y() + _MOUSE_BODY_RY * 0.3)
+    c1 = QPointF(base.x() + 14, base.y() + 8)
+    c2 = QPointF(base.x() + 4, base.y() + 20)
+    end = QPointF(base.x() + 16, base.y() + 22)
+
+    path = QPainterPath(base)
+    path.cubicTo(c1, c2, end)
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_mouse_face(painter: QPainter, center: QPointF) -> None:
+    painter.save()
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(OUTLINE_COLOR)
+    eye_y = center.y() - _MOUSE_BODY_RY * 0.2
+    for side in (-1, 1):
+        ex = center.x() + side * _MOUSE_BODY_RX * 0.4
+        painter.drawEllipse(QPointF(ex, eye_y), 1.8, 1.8)
+    painter.restore()
