@@ -1885,8 +1885,48 @@ doesn't throw and actually paints real, non-transparent pixels (541 out of
 2304 in the grabbed image). `pytest -q` re-run after this part: unchanged
 at **122/122 passed** (still no new pure-logic module).
 
-(Parts 3-4 continue in the sections below, added as each was actually
-built and verified.)
+### Part 3: Spawn timing (`mouse_game.py`, pure logic)
+
+Same discipline as every pure module in this project -- no Qt, no win32,
+everything injected by the caller:
+
+- `random_spawn_interval_seconds(rng=None, min_minutes=45, max_minutes=90)`
+  -- the exact same shape as `oneliners.random_interval_seconds`, same
+  45-90 minute range (the spec said "your call," and reusing the existing
+  range this codebase already established for the other "occasional
+  background thing happens" timer seemed more consistent than inventing a
+  new number for no reason).
+- `should_spawn_mouse(view_mode, is_sulking, is_chasing, is_dragging)` --
+  the same shape as `oneliners.should_show_oneliner`, gated on the same
+  "pet view, not sulking" conditions plus two new ones specific to this
+  feature: not already mid-chase, and not while the user is actively
+  dragging the cat (the spec's one genuinely new gating rule).
+- `pick_spawn_position(screen_left, screen_top, screen_right,
+  screen_bottom, cat_x, cat_y, rng=None, min_distance=150.0,
+  max_attempts=20)` -- uniformly samples points inside the given rect and
+  rejects any closer than `min_distance` to the cat's current position,
+  retrying up to `max_attempts` times before giving up and returning the
+  last sampled point anyway (bounded, so a pathologically small screen
+  can't spin forever trying to satisfy an unsatisfiable distance
+  constraint).
+
+**Testing**: new `tests/test_mouse_game.py`, mirroring `test_oneliners.py`'s
+shape -- **136/136 passed** (122 pre-existing + 14 new): interval bounds
+held over 500 seeded draws, custom bounds respected, determinism given the
+same seed, every `should_spawn_mouse` gating combination (shows when clear,
+skips when sulking, skips when in the inbox view, skips when already
+chasing, skips when dragging, skips when everything's true at once),
+`pick_spawn_position` always returning a point inside the given rect across
+500 seeded draws, always satisfying the default minimum distance across
+another 500, respecting a custom minimum distance, the small-rect edge case
+(a 10x10 rect asked for a point 10,000px away from the cat) still
+terminating and returning a point inside the rect rather than looping
+forever, and determinism given a seeded RNG. This part is pure logic with
+no Qt/win32 involved at all, so pytest is the right and sufficient test
+here -- no separate live check was needed (unlike Parts 1, 2, and 4).
+
+(Part 4 continues in the section below, added once it was actually built
+and verified.)
 
 ## 19. Working agreement for this project
 
