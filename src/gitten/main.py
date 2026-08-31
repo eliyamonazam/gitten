@@ -165,20 +165,30 @@ class GittenApp:
         self._update_tray_tooltip()
 
         menu = QMenu()
-        self.repo_action = QAction("Choose watched repo...")
+        # Every QAction is parented to `menu` at construction, not just
+        # added to it: QMenu.addAction(existing_action) does *not* reparent
+        # or otherwise take ownership of a bare action the way Qt's C++ docs
+        # might suggest -- an action with no Python reference kept anywhere
+        # else is garbage-collected the instant its local variable goes out
+        # of scope, silently vanishing from the menu before it's ever shown.
+        # Confirmed concretely: without `parent=menu`, only `self.repo_action`
+        # (kept alive as an instance attribute) and the separator (which
+        # never gets a Python-side QAction wrapper at all) survived --
+        # rename/birthday/quit were all gone from `menu.actions()`.
+        self.repo_action = QAction("Choose watched repo...", menu)
         self.repo_action.triggered.connect(lambda: self._prompt_choose_repo(required=False))
         menu.addAction(self.repo_action)
 
-        rename_action = QAction("Rename...")
+        rename_action = QAction("Rename...", menu)
         rename_action.triggered.connect(self._prompt_rename)
         menu.addAction(rename_action)
 
-        birthday_action = QAction("Set my birthday...")
+        birthday_action = QAction("Set my birthday...", menu)
         birthday_action.triggered.connect(self._prompt_set_birthday)
         menu.addAction(birthday_action)
 
         menu.addSeparator()
-        quit_action = QAction("Quit Gitten")
+        quit_action = QAction("Quit Gitten", menu)
         quit_action.triggered.connect(self.app.quit)
         menu.addAction(quit_action)
 
@@ -229,17 +239,22 @@ class GittenApp:
         dashboard. Separate from (and in addition to) the tray icon's menu."""
         menu = QMenu()
 
+        # Every QAction below is parented to `menu` -- see the comment in
+        # `_build_tray` for why: without it, each of these (being plain
+        # local variables, the loop variable especially) is garbage
+        # collected before `menu.exec()` even runs, silently stripping the
+        # menu down to almost nothing right before it's shown.
         for text in self._stats_menu_lines():
-            info_action = QAction(text)
+            info_action = QAction(text, menu)
             info_action.setEnabled(False)
             menu.addAction(info_action)
 
         menu.addSeparator()
-        repo_action = QAction("Change watched repo...")
+        repo_action = QAction("Change watched repo...", menu)
         repo_action.triggered.connect(lambda: self._prompt_choose_repo(required=False))
         menu.addAction(repo_action)
 
-        quit_action = QAction("Quit Gitten")
+        quit_action = QAction("Quit Gitten", menu)
         quit_action.triggered.connect(self.app.quit)
         menu.addAction(quit_action)
 

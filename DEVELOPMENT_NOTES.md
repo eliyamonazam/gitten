@@ -1375,7 +1375,158 @@ birthday.
 
 With this, all 7 v1.5 features are implemented, tested, and documented.
 
-## 14. Working agreement for this project
+## 14. v1.5 bug fixes from manual visual verification
+
+After all 7 features landed, a manual pass over the live app (not just the
+off-screen renders each feature's own testing section describes) turned up
+three real bugs. This work spanned two sessions -- the first session found
+all three bugs and ran out of context before fixing any of them (no code
+was changed and nothing was committed, confirmed at the start of this
+second session via `git status`/`git diff` coming back clean and this file
+having no record of the three bugs beyond what's written here); this
+section documents the investigation and fix for all three, done in the
+second session.
+
+### Bug A: drag sparkle trail jumping instead of trailing smoothly
+
+**Root cause**: `_maybe_spawn_drag_particle` (Feature 2) spawned each
+particle at `event.position()` -- coordinates *local to the widget*. But
+the widget itself moves on every drag frame (`self.move(new_pos)` runs
+before the spawn call), and the mouse's position relative to the widget
+stays roughly constant throughout a drag (the drag offset is preserved).
+So every spawned particle landed at nearly the same local coordinate, and
+`paintEvent` drew each one at that fixed local coordinate on every
+subsequent frame regardless of where the widget had since moved to. The
+practical effect: sparkles didn't lag behind in screen space at all --
+they rode along rigidly at the same spot relative to the cat, so a fast
+drag (large per-frame position deltas) looked like the sparkles were
+snapping/jumping along with the widget instead of leaving a smooth trail
+behind it.
+
+**Fix**: particles are now tracked in *global* (screen) coordinates instead
+of widget-local ones -- `_maybe_spawn_drag_particle` spawns using
+`event.globalPosition()`, and `trigger_shooting_star()` (Feature 3, reusing
+the same particle system) converts its local corner-to-corner path to
+global via `self.mapToGlobal(QPoint(0, 0))` as the origin, so its own
+behavior is unaffected (the window doesn't move during a shooting star, so
+the global/local distinction is a no-op for it). `paintEvent` converts back
+to local coordinates at draw time (`global - self.mapToGlobal(QPoint(0,
+0))`) before calling `draw_particles`. This means a sparkle now stays fixed
+at the screen position it was spawned at while the widget moves away from
+it, which is what actually makes it read as trailing behind rather than
+being glued to the cat.
+
+**Testing**: verified against a real, live `KittenWindow` instance (not
+off-screen rendering, not reasoning about the diff): pressed the left
+button to start a real drag, then fed 5 synthetic `mouseMoveEvent`s at
+increasing global x-coordinates (with `time.monotonic` patched for
+deterministic throttle timing) while moving the widget along with each one,
+exactly mirroring what a real drag does. Confirmed all 5 particles spawned
+(the throttle correctly let each one through), then computed the oldest
+surviving particle's *current* local coordinate the same way the fixed
+`paintEvent` now does and confirmed it had drifted to a negative local x
+(off to the left of the widget) after the widget moved 80px to the right
+without it -- concrete proof the sparkle is now trailing behind in screen
+space rather than remaining glued to its original +60 local offset (which
+is what the old, buggy code would have kept it pinned to forever).
+
+### Bug B: hover-purr needed a ~0.2s hold delay
+
+**Root cause**: `enterEvent`/`leaveEvent` (Feature 4) set `self._hovering`
+immediately on entering the widget's region, so a single frame of the mouse
+merely passing over the cat on its way elsewhere would trigger the purr
+face, which read as twitchy rather than deliberate.
+
+**Fix**: added `_HOVER_PURR_DELAY_MS = 200` and a single-shot
+`self._hover_purr_timer`. `enterEvent` now starts that timer instead of
+setting `_hovering` directly; only once it actually elapses
+(`_on_hover_purr_delay_elapsed`) does `_hovering` flip to `True`.
+`leaveEvent` stops the timer and clears `_hovering` immediately -- no delay
+on the way out, since there's no equivalent "accidental blip" concern for
+leaving, and an instant end to the purr reads better than a lingering one.
+
+**Testing**: against a real, live `KittenWindow` with a real Qt event loop
+(`app.processEvents()` pumped across real wall-clock time via
+`time.monotonic()`, since this timer -- unlike the mood/attention/particle
+timestamps elsewhere in this codebase -- is a genuine `QTimer` tied to real
+elapsed time, not an injectable fake clock): confirmed `_hovering` is still
+`False` and the pending timer is active ~120ms after `enterEvent`, confirmed
+it flips to `True` by ~300ms, confirmed `leaveEvent` clears it and stops the
+timer instantly, and separately confirmed a brief pass-over shorter than
+the delay (enter, wait 50ms, leave) never triggers `_hovering` at all.
+
+### Bug C: right-clicking the cat showed a stripped-down menu that looked like the tray's
+
+**What manual testing actually saw** doesn't match what the wiring code
+does: `KittenWindow.mousePressEvent` correctly calls
+`self._context_menu_requested_callback`, which `main.py` sets to
+`GittenApp._show_context_menu` (the full stats-menu builder) -- confirmed
+directly, not assumed, by patching `GittenApp._show_context_menu` with a
+spy *before* constructing a real `GittenApp`, dispatching a real synthetic
+right-click `QMouseEvent` through the live window's actual
+`mousePressEvent`, and confirming the spy fires exactly once with the
+correct global position. The tray's own menu was never in this call path at
+all.
+
+**The real bug was one level deeper**: `_show_context_menu` (and, separately,
+`_build_tray`) built each `QAction` as a bare local variable --
+`QAction("some text")` with no parent -- and added it via
+`menu.addAction(action)`. In PySide6, that call does **not** reparent or
+otherwise take ownership of the action the way it might look like it
+should from the C++ Qt docs; with nothing else holding a Python reference,
+each action is garbage-collected the instant its local variable goes out of
+scope (immediately, for the loop variable building the stats lines -- each
+iteration's `info_action` is collected as soon as the next one is
+assigned), silently vanishing from the menu before `menu.exec()` is ever
+reached. Confirmed directly with a minimal repro (`QAction('x')` added to a
+`QMenu()` with no other reference, `gc.collect()`, then `menu.actions()`
+comes back empty; the same thing with `QAction('x', menu)` -- an explicit
+parent -- correctly survives). Applied against the real `_build_tray()`
+code before any fix: only `self.repo_action` (kept alive as an instance
+attribute) and the separator (which never gets a Python-side `QAction`
+wrapper in the first place) survived in the tray's own menu -- `Rename...`,
+`Set my birthday...`, and `Quit Gitten` were all silently gone from
+`menu.actions()`. This is almost certainly what manual testing actually
+saw and described as "the tray's 2-item menu": not the tray's menu being
+shown by mistake, but the *cat's own* freshly-built stats menu having lost
+most of its unparented local actions to the same bug, leaving behind
+something small enough to look like it.
+
+**Fix**: every `QAction` constructed in `_build_tray` and
+`_show_context_menu` now passes `menu` as its parent at construction
+(`QAction("text", menu)`) instead of relying on `menu.addAction()` to keep
+it alive. This gives Qt's own C++ parent/child ownership the job, so it no
+longer depends on some other Python reference happening to still be in
+scope.
+
+**Testing, deliberately avoiding a known trap**: v1.5 Feature 6's own notes
+(section 13) already flag that monkeypatching a compiled Shiboken method
+like `QMenu.exec` silently corrupts `.actions()` on a menu built inside the
+same patch context -- confirmed that's still true here (a first attempt at
+patching `QMenu.exec` at the class level, to avoid the real blocking popup,
+made this test script hang indefinitely and leave two stray `python.exe`
+processes behind, which were killed manually). So instead of touching
+`QMenu.exec` at all: (1) rebuilt the tray by constructing a real `GittenApp`
+and reading `self.tray.contextMenu().actions()` directly after a
+`gc.collect()` -- before the fix this returned only `Choose watched
+repo...` plus the separator; after the fix, all 4 real actions
+(`Choose watched repo...`, `Rename...`, `Set my birthday...`, `Quit
+Gitten`) are present. (2) For the stats menu (whose real construction ends
+in a genuinely blocking `menu.exec()` that can't safely be called from a
+script), replicated `_show_context_menu`'s exact action-construction
+statements verbatim, stopping right before the equivalent of `exec()`, and
+confirmed all 9 expected actions (6 info lines + separator + "Change
+watched repo..." + "Quit Gitten") survive a `gc.collect()` at that point --
+none silently missing the way `Rename...`/`Set my birthday...`/`Quit
+Gitten` were from the tray menu before the fix.
+
+`pytest -q` was re-run after all three fixes: still **114/114 passed**
+(none of the three bugs had pure-logic-module coverage to begin with --
+they're all Qt-wiring/lifecycle issues in `window.py` and `main.py`, tested
+the same ad hoc real-widget way this project's other Qt-only changes
+already are, per the working agreement below).
+
+## 15. Working agreement for this project
 
 **Every change made to this codebase must be recorded in this file
 (`DEVELOPMENT_NOTES.md`) in the same session it's made** — what was

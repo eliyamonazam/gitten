@@ -42,6 +42,11 @@ _DRAG_PARTICLE_LIFESPAN_SECONDS = 0.5
 
 _SHOOTING_STAR_LIFESPAN_SECONDS = 1.0
 
+# The cursor has to sit on the cat for a moment before it purrs, so a mouse
+# just passing over it on its way somewhere else doesn't trigger the purr
+# face for a single frame.
+_HOVER_PURR_DELAY_MS = 200
+
 _HIGH_FIVE_DURATION_SECONDS = 1.3
 
 # Shown in the inbox view for the two distinct "nothing to show" causes the
@@ -90,6 +95,13 @@ class KittenWindow(QWidget):
         self._particles = ParticleSystem()
         self._last_particle_spawn_at = 0.0
         self._hovering = False
+        # Purring only kicks in once the cursor has held still over the cat
+        # for _HOVER_PURR_DELAY_MS -- entering starts this single-shot timer
+        # rather than setting _hovering immediately; leaving cancels it (and
+        # any active purr) right away, no delay needed on the way out.
+        self._hover_purr_timer = QTimer(self)
+        self._hover_purr_timer.setSingleShot(True)
+        self._hover_purr_timer.timeout.connect(self._on_hover_purr_delay_elapsed)
 
         # Single/double-click disambiguation (Feature 5): a double-click is,
         # at the Qt event level, still a single click first -- Qt delivers
@@ -206,11 +218,16 @@ class KittenWindow(QWidget):
         over ~1 second, fading as it goes -- the rare event `main.py` plays
         instead of a one-liner roughly 5% of the time."""
         now = time.monotonic()
-        end_x, end_y = float(self.width()), float(self.height())
-        dx = end_x / _SHOOTING_STAR_LIFESPAN_SECONDS
-        dy = end_y / _SHOOTING_STAR_LIFESPAN_SECONDS
+        origin = self.mapToGlobal(QPoint(0, 0))
+        dx = self.width() / _SHOOTING_STAR_LIFESPAN_SECONDS
+        dy = self.height() / _SHOOTING_STAR_LIFESPAN_SECONDS
         self._particles.spawn_particle(
-            0.0, 0.0, now, lifespan=_SHOOTING_STAR_LIFESPAN_SECONDS, dx=dx, dy=dy
+            float(origin.x()),
+            float(origin.y()),
+            now,
+            lifespan=_SHOOTING_STAR_LIFESPAN_SECONDS,
+            dx=dx,
+            dy=dy,
         )
 
     def set_context_menu_callback(self, callback) -> None:
@@ -306,12 +323,22 @@ class KittenWindow(QWidget):
         elapsed = now - self._start_time
         nudge_opacity = self._nudge_opacity(now)
 
-        # Particles are drawn in raw widget-pixel space, outside paint_kitten's
-        # own 128x128 canvas transform, since they're spawned from real cursor
-        # coordinates (drag trail) or window corners (shooting star) rather
-        # than the kitten's internal drawing space.
+        # Particles are tracked in *global* screen coordinates (see
+        # _maybe_spawn_drag_particle / trigger_shooting_star) so a sparkle
+        # stays put on screen while the window itself moves away from it
+        # during a drag -- that's what makes the drag trail actually trail
+        # instead of snapping along rigidly with the widget. They're
+        # converted back to local widget-pixel space here, at paint time,
+        # outside paint_kitten's own 128x128 canvas transform (particles are
+        # cosmetic, window-owned overlay, not part of the kitten's internal
+        # drawing space).
         self._particles.update_and_prune(now)
-        draw_particles(painter, self._particles.positions(now))
+        origin = self.mapToGlobal(QPoint(0, 0))
+        local_positions = [
+            (x - origin.x(), y - origin.y(), opacity)
+            for x, y, opacity in self._particles.positions(now)
+        ]
+        draw_particles(painter, local_positions)
 
         paint_kitten(
             painter,
@@ -332,10 +359,14 @@ class KittenWindow(QWidget):
         )
 
     def enterEvent(self, event) -> None:
-        self._hovering = True
+        self._hover_purr_timer.start(_HOVER_PURR_DELAY_MS)
 
     def leaveEvent(self, event) -> None:
+        self._hover_purr_timer.stop()
         self._hovering = False
+
+    def _on_hover_purr_delay_elapsed(self) -> None:
+        self._hovering = True
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.interacted.emit()
@@ -363,9 +394,14 @@ class KittenWindow(QWidget):
         if now - self._last_particle_spawn_at < _DRAG_PARTICLE_INTERVAL_SECONDS:
             return
         self._last_particle_spawn_at = now
-        local = event.position()
+        # Global (screen), not local (widget) coordinates -- see the
+        # comment in paintEvent for why: this is what makes the sparkle stay
+        # behind at the cursor's actual on-screen spot as the window moves
+        # away from it, instead of being dragged along rigidly with the
+        # widget.
+        global_pos = event.globalPosition()
         self._particles.spawn_particle(
-            local.x(), local.y(), now, lifespan=_DRAG_PARTICLE_LIFESPAN_SECONDS
+            global_pos.x(), global_pos.y(), now, lifespan=_DRAG_PARTICLE_LIFESPAN_SECONDS
         )
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
