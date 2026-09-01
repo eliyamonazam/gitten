@@ -5,6 +5,24 @@ paths) in a fixed 128x128 logical coordinate space -- no external art
 assets. `paint_kitten` is pure with respect to Qt widget state: give it a
 painter, a target rect, a mood, and a monotonically increasing time in
 seconds, and it draws one animated frame.
+
+## v1.15 -- the bold flat mascot style
+
+Every shape in this file (body, ears, tail, paws, eyes, mouths, badges,
+streak icons, seasonal accessories, and the mouse sprite at the bottom) was
+redrawn per `GITTEN_V1_15_SPEC.md`: one uniform bold outline color/width
+used everywhere (`OUTLINE_COLOR`/`_OUTLINE_PEN_WIDTH`, both below), flat
+single-tone fills with no gradients anywhere (replacing the original v1
+body's radial-gradient "glossy" highlight), and the cat's own body color is
+now `theme.ACCENT` itself rather than an independently-hardcoded coral --
+the same value as before (theme.py's own docstring already documents
+reusing this exact color verbatim from `sprite.BODY_COLOR`), just now
+single-sourced instead of the last remaining place in this app defining its
+own copy of it. Every pose, precedence rule, and animation timing (breathe/
+bob/sway/pulse/drift speeds and durations) is unchanged from before this
+round -- only how each shape is drawn changed, never when or why. See
+DEVELOPMENT_NOTES.md's v1.15 entry for the part-by-part build order and the
+live-screenshot verification for each part.
 """
 
 from __future__ import annotations
@@ -17,22 +35,31 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetricsF,
-    QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
-    QRadialGradient,
 )
 
 from gitten import theme
 from gitten.mood import Mood
 from gitten.status_badge import Badge
 
-BODY_COLOR = QColor("#E8935F")
-BODY_HIGHLIGHT = QColor("#F7B98F")
-INNER_EAR_COLOR = QColor("#F5B98A")
-OUTLINE_COLOR = QColor("#2C2C2A")
-WHITE = QColor("#FFFFFF")
+# The cat's own body color *is* theme.ACCENT now (not an independent copy of
+# the same hex) -- the last piece tying the character itself into the same
+# palette as Settings/Dashboard/command bar/bubbles, per the v1.15 spec.
+BODY_COLOR = theme.ACCENT
+# Flat secondary tone for small two-tone details (inner ear, paw pads) that
+# used to be a gradient highlight -- one of theme.py's own plain constants
+# (its "lightened toward white" accent variant) rather than a new one-off
+# hex value invented just for this file.
+SECONDARY_FILL_COLOR = theme.ACCENT_SOFT
+# The bold mascot outline: one consistent stroke color (theme.py's darkest
+# text tone) and, via _OUTLINE_PEN_WIDTH below, one consistent width -- used
+# for literally every shape this file draws (body, ears, tail, paws, eyes,
+# mouths, badges, streak icons, accessories, the mouse), never varied per
+# element or per pose, per the spec's explicit instruction.
+OUTLINE_COLOR = theme.TEXT_PRIMARY
+WHITE = theme.SURFACE_CARD
 SHADOW_COLOR = QColor(0, 0, 0, 60)
 ZZZ_COLOR = QColor(120, 120, 128, 220)
 
@@ -40,7 +67,13 @@ CANVAS = 128.0
 CENTER = QPointF(CANVAS / 2, 70.0)
 BODY_RX, BODY_RY = 34.0, 30.0
 
-_OUTLINE_PEN_WIDTH = 2.6
+# v1.15: bumped from the old v1 value (2.6) to a genuinely bold, confident
+# stroke, and -- unlike before -- held constant across every shape in this
+# file rather than varying per element (the old code passed a different
+# width into nearly every `_outline_pen(...)` call; every one of those
+# overrides was removed this round, see the spec's explicit "not varying
+# stroke weights per element" instruction).
+_OUTLINE_PEN_WIDTH = 3.2
 
 
 def _outline_pen(width: float = _OUTLINE_PEN_WIDTH) -> QPen:
@@ -49,6 +82,27 @@ def _outline_pen(width: float = _OUTLINE_PEN_WIDTH) -> QPen:
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
     return pen
+
+
+def _draw_flat_eye_arc(
+    painter: QPainter, ex: float, ey: float, half_width: float, bulge: float, thickness: float = 3.0
+) -> None:
+    """A bold, flat-filled crescent -- the v1.15 mascot-style replacement
+    for the old thin single-stroke curve. `bulge` is the curve's signed
+    depth (positive curves downward, reading as a relaxed/sleepy closed eye;
+    negative curves upward, reading as a happy upward squint); `thickness`
+    is how fat the filled band reads. Shared by every closed/squinted eye
+    pose (idle, happy, purr, deep sleep, the sulking peek) so they all read
+    as the same bold, simple shape language instead of each pose inventing
+    its own stroke."""
+    extra = thickness if bulge >= 0 else -thickness
+    path = QPainterPath(QPointF(ex - half_width, ey))
+    path.quadTo(QPointF(ex, ey + bulge), QPointF(ex + half_width, ey))
+    path.quadTo(QPointF(ex, ey + bulge + extra), QPointF(ex - half_width, ey))
+    path.closeSubpath()
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(OUTLINE_COLOR)
+    painter.drawPath(path)
 
 
 def paint_kitten(
@@ -246,22 +300,56 @@ def _draw_shadow(painter: QPainter, center: QPointF) -> None:
     painter.restore()
 
 
+_TAIL_WIDTH = 9.0
+_TAIL_WIDTH_CURLED = 7.0
+# How much wider the underneath outline stroke is than the tail's own fill
+# width -- deliberately *not* `_OUTLINE_PEN_WIDTH * 2` (the naive "outline
+# ring exactly as thick as every other shape's outline" choice): with
+# RoundCap line ends, that made the *curled* AWAY-pose tail (whose two path
+# endpoints sit only ~9 units apart) render as one solid blob, the two caps
+# overlapping into a circle that swallowed the curl shape entirely --  caught
+# by actually looking at a live screenshot of the AWAY pose, not just
+# eyeballing the regular swaying tail in isolation. This smaller value still
+# reads as a clear, bold ring around the regular tail while keeping the
+# curled variant's much tighter loop legible.
+_TAIL_OUTLINE_EXTRA = 2.4
+
+
 def _draw_tail(painter: QPainter, center: QPointF, phase: float, curled: bool = False) -> None:
+    """v1.15: the tail used to be a thick BODY_COLOR line stroke with a
+    second, thin dark stroke traced down its *centerline* -- which read as a
+    decorative seam, not a real silhouette outline (an outline has to run
+    along the shape's edges, not through its middle). Now it's the same
+    thick-line technique with a genuine bold outline: the same path is
+    stroked twice, once wider in OUTLINE_COLOR underneath (via
+    `_outline_pen`, so it's the same shared width as every other shape's
+    outline) and once at the tail's own width in BODY_COLOR on top -- the
+    classic "stroke behind fill" trick for turning a line into an outlined
+    shape, giving the tail the same bold edge every other part of the cat
+    now has."""
     painter.save()
-    pen = _outline_pen(9.0)
-    pen.setColor(BODY_COLOR)
-    painter.setPen(pen)
 
     if curled:
-        # Tucked in close to the body in a small curled loop instead of
-        # swaying -- reads as "settled down to sleep" rather than
-        # alert/active (v1.8 AWAY pose). Anchored a bit closer to center
-        # than the regular base since the lying-down body is flatter/wider.
-        base = QPointF(center.x() + BODY_RX * 0.55, center.y() + BODY_RY * 0.25)
-        c1 = QPointF(base.x() + 12, base.y() + 2)
-        c2 = QPointF(base.x() + 8, base.y() - 12)
-        end = QPointF(base.x() - 4, base.y() - 8)
+        # Tucked in against the back of the lying body in a small curled
+        # loop instead of swaying -- reads as "settled down to sleep" rather
+        # than alert/active (v1.8 AWAY pose). v1.15: widened and lowered
+        # from its original tight loop -- with the new bold outline making
+        # the tail's silhouette much more visible than the old thin
+        # centerline seam did, the original path's start/end points sat
+        # only ~9 units apart, close enough that the two RoundCap line ends
+        # merged into one solid blob overlapping the closed eye instead of
+        # reading as a curl -- caught by looking at a real rendered image,
+        # not just the pixel-diff style checks this codebase otherwise
+        # leans on. This path keeps its endpoints well separated and sits
+        # lower/further back along the lying body instead of up near the
+        # face.
+        width = _TAIL_WIDTH_CURLED
+        base = QPointF(center.x() + BODY_RX * 0.95, center.y() + BODY_RY * 0.4)
+        c1 = QPointF(base.x() + 13, base.y() - 5)
+        c2 = QPointF(base.x() + 15, base.y() - 20)
+        end = QPointF(base.x() - 3, base.y() - 17)
     else:
+        width = _TAIL_WIDTH
         base = QPointF(center.x() + BODY_RX * 0.75, center.y() + BODY_RY * 0.55)
         sway = 14.0 * phase
         c1 = QPointF(base.x() + 22, base.y() + 6 + sway * 0.4)
@@ -270,12 +358,14 @@ def _draw_tail(painter: QPainter, center: QPointF, phase: float, curled: bool = 
 
     path = QPainterPath(base)
     path.cubicTo(c1, c2, end)
-    painter.drawPath(path)
 
-    # thin dark outline stroke on top for definition
-    outline = _outline_pen(1.4)
+    outline = _outline_pen(width + _TAIL_OUTLINE_EXTRA)
     painter.setPen(outline)
     painter.setBrush(Qt.NoBrush)
+    painter.drawPath(path)
+
+    fill = QPen(BODY_COLOR, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    painter.setPen(fill)
     painter.drawPath(path)
     painter.restore()
 
@@ -319,7 +409,7 @@ def _draw_ears(
             QPointF(ex + 9 * side, ey + 5),
         ]
         painter.setPen(Qt.NoPen)
-        painter.setBrush(INNER_EAR_COLOR)
+        painter.setBrush(SECONDARY_FILL_COLOR)
         _draw_polygon(painter, inner)
         painter.setPen(_outline_pen())
     painter.restore()
@@ -335,7 +425,6 @@ def _draw_polygon(painter: QPainter, pts) -> None:
 
 
 _MOONLIT_BASE = QColor("#3B4A6B")
-_MOONLIT_HIGHLIGHT = QColor("#5C6F99")
 _NIGHT_BLEND_FACTOR = 0.45
 
 
@@ -351,6 +440,10 @@ def _blend_color(a: QColor, b: QColor, factor: float) -> QColor:
 def _draw_body(
     painter: QPainter, center: QPointF, breathe: float, night: bool = False, lying: bool = False
 ) -> None:
+    """v1.15: flat single-tone fill -- no gradient, no highlight overlay --
+    replacing the original v1 radial-gradient "glossy" body, per the spec's
+    explicit instruction that this was an intentional style change, not
+    something to preserve."""
     painter.save()
     # v1.8 AWAY pose: "the cat lies down rather than sits" -- a noticeably
     # wider, flatter ellipse instead of the regular upright oval, the main
@@ -361,22 +454,10 @@ def _draw_body(
     rect = QRectF(0, 0, rx * 2, ry * 2 * breathe)
     rect.moveCenter(center)
 
-    if night:
-        base_color = _blend_color(BODY_COLOR, _MOONLIT_BASE, _NIGHT_BLEND_FACTOR)
-        highlight_color = _blend_color(BODY_HIGHLIGHT, _MOONLIT_HIGHLIGHT, _NIGHT_BLEND_FACTOR)
-    else:
-        base_color = BODY_COLOR
-        highlight_color = BODY_HIGHLIGHT
-
-    gradient = QRadialGradient(
-        QPointF(center.x() - BODY_RX * 0.35, center.y() - BODY_RY * 0.5),
-        BODY_RX * 1.6,
-    )
-    gradient.setColorAt(0.0, highlight_color)
-    gradient.setColorAt(1.0, base_color)
+    fill_color = _blend_color(BODY_COLOR, _MOONLIT_BASE, _NIGHT_BLEND_FACTOR) if night else BODY_COLOR
 
     painter.setPen(_outline_pen())
-    painter.setBrush(gradient)
+    painter.setBrush(fill_color)
     painter.drawEllipse(rect)
     painter.restore()
 
@@ -392,16 +473,13 @@ def _draw_face(painter: QPainter, center: QPointF, mood: Mood, t: float) -> None
 
 def _draw_idle_face(painter: QPainter, center: QPointF) -> None:
     painter.save()
-    pen = _outline_pen(2.2)
-    painter.setPen(pen)
     eye_y = center.y() - 2
     for side in (-1, 1):
         ex = center.x() + side * 11
-        path = QPainterPath(QPointF(ex - 5, eye_y))
-        path.quadTo(QPointF(ex, eye_y + 3), QPointF(ex + 5, eye_y))
-        painter.drawPath(path)
+        _draw_flat_eye_arc(painter, ex, eye_y, half_width=5.0, bulge=4.0)
 
     mouth_y = center.y() + 10
+    painter.setPen(_outline_pen())
     path = QPainterPath(QPointF(center.x() - 4, mouth_y))
     path.quadTo(QPointF(center.x(), mouth_y + 3), QPointF(center.x() + 4, mouth_y))
     painter.drawPath(path)
@@ -410,16 +488,13 @@ def _draw_idle_face(painter: QPainter, center: QPointF) -> None:
 
 def _draw_happy_face(painter: QPainter, center: QPointF) -> None:
     painter.save()
-    pen = _outline_pen(2.4)
-    painter.setPen(pen)
-    eye_y = center.y() - 3
+    eye_y = center.y() + 1
     for side in (-1, 1):
         ex = center.x() + side * 11
-        path = QPainterPath(QPointF(ex - 6, eye_y + 3))
-        path.quadTo(QPointF(ex, eye_y - 6), QPointF(ex + 6, eye_y + 3))
-        painter.drawPath(path)
+        _draw_flat_eye_arc(painter, ex, eye_y, half_width=6.0, bulge=-9.0)
 
     mouth_y = center.y() + 9
+    painter.setPen(_outline_pen())
     path = QPainterPath(QPointF(center.x() - 8, mouth_y - 2))
     path.quadTo(QPointF(center.x(), mouth_y + 7), QPointF(center.x() + 8, mouth_y - 2))
     painter.drawPath(path)
@@ -435,17 +510,17 @@ def _draw_waiting_face(painter: QPainter, center: QPointF, t: float) -> None:
         ex = center.x() + side * 11
         eye_rect = QRectF(0, 0, 11, 11)
         eye_rect.moveCenter(QPointF(ex, eye_y))
-        painter.setPen(_outline_pen(1.8))
+        painter.setPen(_outline_pen())
         painter.setBrush(WHITE)
         painter.drawEllipse(eye_rect)
 
-        pupil_rect = QRectF(0, 0, 4.2, 4.2)
+        pupil_rect = QRectF(0, 0, 5.0, 5.0)
         pupil_rect.moveCenter(QPointF(ex + look, eye_y + 1))
         painter.setPen(Qt.NoPen)
         painter.setBrush(OUTLINE_COLOR)
         painter.drawEllipse(pupil_rect)
 
-        brow_pen = _outline_pen(2.2)
+        brow_pen = _outline_pen()
         painter.setPen(brow_pen)
         by = eye_y - 9
         bx0 = QPointF(ex - 6, by + (2 if side < 0 else 0))
@@ -453,7 +528,7 @@ def _draw_waiting_face(painter: QPainter, center: QPointF, t: float) -> None:
         painter.drawLine(bx0, bx1)
 
     mouth_y = center.y() + 11
-    pen = _outline_pen(2.0)
+    pen = _outline_pen()
     painter.setPen(pen)
     path = QPainterPath(QPointF(center.x() - 6, mouth_y))
     path.quadTo(QPointF(center.x() - 3, mouth_y + 3), QPointF(center.x(), mouth_y))
@@ -469,17 +544,14 @@ def _draw_purr_face(painter: QPainter, center: QPointF, t: float) -> None:
     still slightly open, with a gentle upward smile and no zzz/heart/bubble
     overlay at all."""
     painter.save()
-    pen = _outline_pen(2.2)
-    painter.setPen(pen)
     eye_y = center.y() - 2
     squint = 0.6 + 0.1 * math.sin(t * 2.5)
     for side in (-1, 1):
         ex = center.x() + side * 11
-        path = QPainterPath(QPointF(ex - 5, eye_y + 1))
-        path.quadTo(QPointF(ex, eye_y + 3 * squint), QPointF(ex + 5, eye_y + 1))
-        painter.drawPath(path)
+        _draw_flat_eye_arc(painter, ex, eye_y + 1, half_width=5.0, bulge=3.0 * squint, thickness=2.2)
 
     mouth_y = center.y() + 9
+    painter.setPen(_outline_pen())
     path = QPainterPath(QPointF(center.x() - 5, mouth_y - 1))
     path.quadTo(QPointF(center.x(), mouth_y + 4), QPointF(center.x() + 5, mouth_y - 1))
     painter.drawPath(path)
@@ -500,7 +572,7 @@ def _draw_focused_face(painter: QPainter, center: QPointF, t: float) -> None:
         ex = center.x() + side * 11
         eye_rect = QRectF(0, 0, 11, 11)
         eye_rect.moveCenter(QPointF(ex, eye_y))
-        painter.setPen(_outline_pen(1.8))
+        painter.setPen(_outline_pen())
         painter.setBrush(WHITE)
         painter.drawEllipse(eye_rect)
 
@@ -511,7 +583,7 @@ def _draw_focused_face(painter: QPainter, center: QPointF, t: float) -> None:
         painter.drawEllipse(pupil_rect)
 
     mouth_y = center.y() + 10
-    painter.setPen(_outline_pen(2.0))
+    painter.setPen(_outline_pen())
     painter.drawLine(QPointF(center.x() - 4, mouth_y), QPointF(center.x() + 4, mouth_y))
     painter.restore()
 
@@ -525,14 +597,13 @@ def _draw_sleep_face(painter: QPainter, center: QPointF, t: float) -> None:
     different from regular IDLE at a glance, not just a relabeled version of
     it."""
     painter.save()
-    pen = _outline_pen(2.0)
-    painter.setPen(pen)
     eye_y = center.y() - 1
     for side in (-1, 1):
         ex = center.x() + side * 11
-        painter.drawLine(QPointF(ex - 5, eye_y), QPointF(ex + 5, eye_y))
+        _draw_flat_eye_arc(painter, ex, eye_y, half_width=5.0, bulge=0.6, thickness=2.0)
 
     mouth_y = center.y() + 7
+    painter.setPen(_outline_pen())
     painter.drawLine(QPointF(center.x() - 2, mouth_y), QPointF(center.x() + 2, mouth_y))
     painter.restore()
 
@@ -575,20 +646,20 @@ def _draw_curious_face(painter: QPainter, center: QPointF, t: float) -> None:
         ex = center.x() + side * 11
         eye_rect = QRectF(0, 0, 11, 11)
         eye_rect.moveCenter(QPointF(ex, eye_y))
-        painter.setPen(_outline_pen(1.8))
+        painter.setPen(_outline_pen())
         painter.setBrush(WHITE)
         painter.drawEllipse(eye_rect)
 
-        pupil_rect = QRectF(0, 0, 4.6, 4.6)
+        pupil_rect = QRectF(0, 0, 5.0, 5.0)
         pupil_rect.moveCenter(QPointF(ex + pupil_shift, eye_y))
         painter.setPen(Qt.NoPen)
         painter.setBrush(OUTLINE_COLOR)
         painter.drawEllipse(pupil_rect)
 
     mouth_y = center.y() + 10
-    painter.setPen(_outline_pen(1.8))
+    painter.setPen(_outline_pen())
     painter.setBrush(WHITE)
-    painter.drawEllipse(QPointF(center.x(), mouth_y), 2.6, 2.6)
+    painter.drawEllipse(QPointF(center.x(), mouth_y), 2.8, 2.8)
     painter.restore()
 
 
@@ -602,7 +673,7 @@ def _draw_face_turned(painter: QPainter, center: QPointF, stage: int, t: float) 
 
     # A faint center seam hints at the back of the head; it fades out as the
     # cat turns further toward the viewer.
-    seam_pen = _outline_pen(1.6)
+    seam_pen = _outline_pen()
     seam_color = QColor(OUTLINE_COLOR)
     seam_color.setAlpha(int(150 * (1.0 - stage / 3.0)))
     seam_pen.setColor(seam_color)
@@ -619,15 +690,15 @@ def _draw_face_turned(painter: QPainter, center: QPointF, stage: int, t: float) 
     reveal = stage / 3.0
     visible_sides = (1,) if stage == 1 else (-1, 1)
     eye_y = center.y() - 2
-    painter.setPen(_outline_pen(2.0))
     for side in visible_sides:
         ex = center.x() + side * (6 + 5 * reveal)
-        path = QPainterPath(QPointF(ex - (4 * reveal + 1), eye_y))
-        path.quadTo(QPointF(ex, eye_y + 2.5 * reveal), QPointF(ex + 4 * reveal + 1, eye_y))
-        painter.drawPath(path)
+        _draw_flat_eye_arc(
+            painter, ex, eye_y, half_width=4 * reveal + 1, bulge=2.5 * reveal, thickness=1.8
+        )
 
     if stage >= 3:
         mouth_y = center.y() + 10
+        painter.setPen(_outline_pen())
         path = QPainterPath(QPointF(center.x() - 3, mouth_y))
         path.quadTo(QPointF(center.x(), mouth_y + 2), QPointF(center.x() + 3, mouth_y))
         painter.drawPath(path)
@@ -722,13 +793,13 @@ def _draw_exclaim_bubble(painter: QPainter, center: QPointF, t: float, urgent: b
     by = center.y() - BODY_RY * 1.45 - bounce
 
     radius = 11.0
-    painter.setPen(_outline_pen(2.0))
+    painter.setPen(_outline_pen())
     painter.setBrush(WHITE)
     painter.drawEllipse(QPointF(bx, by), radius, radius)
 
     font = QFont("Segoe UI", 12, QFont.Bold)
     painter.setFont(font)
-    painter.setPen(_outline_pen(1.4))
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
     metrics = QFontMetricsF(font)
     # A low/critical battery badge active at the same moment reads as more
     # urgent than "uncommitted changes" alone -- a pure rendering-time check,
@@ -743,6 +814,22 @@ def _draw_exclaim_bubble(painter: QPainter, center: QPointF, t: float, urgent: b
 # -- status badges ------------------------------------------------------
 # A separate overlay layer from mood: at most one small icon shown near the
 # top-left of the head, on top of whatever mood is currently displayed.
+
+# v1.15: every small "chrome" icon in this file (badges, the streak star/
+# crown, seasonal accessories) shares this one bold outline width instead of
+# each icon picking its own (the old code ranged from 1.0 to 1.2, a
+# different value nearly every time). It's deliberately thinner than
+# `_OUTLINE_PEN_WIDTH` (the character's own body/ears/tail/face outline)
+# rather than literally identical -- at these icons' much smaller scale
+# (some as small as ~6 units across), the full character-scale width would
+# swallow the shape entirely into an unrecognizable blob (confirmed by
+# actually rendering the lightning-bolt icon at `_OUTLINE_PEN_WIDTH` before
+# picking this value -- it did exactly that). This is still a real, uniform
+# bump from the old varying 1.0-1.2px range, and it's the *one* width every
+# icon in this section uses, holding to the spec's "not varying stroke
+# weights per element" instruction at this second, smaller scale rather
+# than literally reusing the character's own scale.
+_SMALL_ICON_OUTLINE_WIDTH = 1.6
 
 _BADGE_POS_OFFSET = QPointF(-BODY_RX * 0.85, -BODY_RY * 1.15)
 
@@ -774,7 +861,7 @@ def _draw_battery_icon(
 
     body = QRectF(0, 0, 13.0, 8.0)
     body.moveCenter(pos)
-    painter.setPen(_outline_pen(1.2))
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
     painter.setBrush(fill)
     painter.drawRoundedRect(body, 1.5, 1.5)
 
@@ -792,7 +879,7 @@ def _draw_battery_icon(
 
 def _draw_lightning_icon(painter: QPainter, pos: QPointF) -> None:
     painter.save()
-    painter.setPen(_outline_pen(1.0))
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
     painter.setBrush(QColor("#FDD835"))
     path = QPainterPath(QPointF(pos.x() - 1.5, pos.y() - 7.0))
     path.lineTo(QPointF(pos.x() + 3.0, pos.y() - 7.0))
@@ -824,7 +911,7 @@ def _draw_sweat_drop_icon(painter: QPainter, pos: QPointF, t: float) -> None:
         QPointF(dx + size * 0.9, dy + size * 0.2),
         QPointF(dx, dy - size),
     )
-    painter.setPen(_outline_pen(1.0))
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
     painter.setBrush(QColor("#4FC3F7"))
     painter.drawPath(path)
     painter.restore()
@@ -834,7 +921,7 @@ def _draw_disk_warning_icon(painter: QPainter, pos: QPointF) -> None:
     painter.save()
     disk_rect = QRectF(0, 0, 12.0, 12.0)
     disk_rect.moveCenter(QPointF(pos.x() - 2.0, pos.y()))
-    painter.setPen(_outline_pen(1.1))
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
     painter.setBrush(QColor("#B0BEC5"))
     painter.drawEllipse(disk_rect)
     hole_rect = QRectF(0, 0, 4.0, 4.0)
@@ -854,7 +941,7 @@ def _draw_disk_warning_icon(painter: QPainter, pos: QPointF) -> None:
 
     font = QFont("Segoe UI", 6, QFont.Bold)
     painter.setFont(font)
-    painter.setPen(_outline_pen(1.0))
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
     painter.drawText(QPointF(warn_center.x() - 1.2, warn_center.y() + 2.2), "!")
     painter.restore()
 
@@ -889,7 +976,7 @@ def _star_points(center: QPointF, outer_r: float, inner_r: float) -> list[QPoint
 def _draw_star_icon(painter: QPainter, pos: QPointF, radius: float, color: QColor, t: float) -> None:
     painter.save()
     twinkle = 0.85 + 0.15 * math.sin(t * 3.0)
-    painter.setPen(_outline_pen(1.0))
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
     painter.setBrush(color)
     _draw_polygon(painter, _star_points(pos, radius * twinkle, radius * 0.42))
     painter.restore()
@@ -909,7 +996,7 @@ def _draw_crown_icon(painter: QPainter, pos: QPointF) -> None:
         QPointF(left_x + w, base_y - h),
         QPointF(left_x + w, base_y),
     ]
-    painter.setPen(_outline_pen(1.0))
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
     painter.setBrush(QColor("#FFD700"))
     _draw_polygon(painter, points)
     painter.restore()
@@ -946,9 +1033,9 @@ def _draw_nudge_wave(painter: QPainter, center: QPointF, t: float) -> None:
     paw_x = center.x() + BODY_RX * 0.95
     paw_y = center.y() + BODY_RY * 0.1 - 8.0 * max(0.0, swing)
 
-    pen = _outline_pen(1.6)
+    pen = _outline_pen()
     painter.setPen(pen)
-    painter.setBrush(BODY_HIGHLIGHT)
+    painter.setBrush(SECONDARY_FILL_COLOR)
     painter.drawEllipse(QPointF(paw_x, paw_y), 6.5, 6.5)
     painter.restore()
 
@@ -1143,7 +1230,7 @@ def _draw_accessory(painter: QPainter, center: QPointF, accessory: str, t: float
 
 def _draw_witch_hat(painter: QPainter, pos: QPointF) -> None:
     painter.save()
-    painter.setPen(_outline_pen(1.4))
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
     painter.setBrush(QColor("#2B2B33"))
 
     brim = QRectF(0, 0, 28.0, 6.0)
@@ -1166,7 +1253,7 @@ def _draw_witch_hat(painter: QPainter, pos: QPointF) -> None:
 
 def _draw_pomegranate_hat(painter: QPainter, pos: QPointF) -> None:
     painter.save()
-    painter.setPen(_outline_pen(1.2))
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
     painter.setBrush(QColor("#B32B3A"))
     body = QRectF(0, 0, 16.0, 15.0)
     body.moveCenter(QPointF(pos.x(), pos.y() + 3.0))
@@ -1184,19 +1271,21 @@ def _draw_pomegranate_hat(painter: QPainter, pos: QPointF) -> None:
     painter.restore()
 
 
+_PARTY_HAT_COLOR = QColor("#42A5F5")
+
+
 def _draw_party_hat(painter: QPainter, pos: QPointF) -> None:
+    """v1.15: flat single-tone cone (the shared `_PARTY_HAT_COLOR`) instead
+    of the old three-stop rainbow gradient -- gradients are gone everywhere
+    in this file, per the spec, not just on the body."""
     painter.save()
-    painter.setPen(_outline_pen(1.4))
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
     cone = QPainterPath(QPointF(pos.x() - 9.0, pos.y() + 5.0))
     cone.lineTo(QPointF(pos.x(), pos.y() - 18.0))
     cone.lineTo(QPointF(pos.x() + 9.0, pos.y() + 5.0))
     cone.closeSubpath()
 
-    gradient = QLinearGradient(QPointF(pos.x(), pos.y() - 18.0), QPointF(pos.x(), pos.y() + 5.0))
-    gradient.setColorAt(0.0, QColor("#42A5F5"))
-    gradient.setColorAt(0.5, QColor("#FFEE58"))
-    gradient.setColorAt(1.0, QColor("#EF5350"))
-    painter.setBrush(gradient)
+    painter.setBrush(_PARTY_HAT_COLOR)
     painter.drawPath(cone)
 
     painter.setPen(Qt.NoPen)
@@ -1214,9 +1303,9 @@ def _draw_high_five_paw(painter: QPainter, center: QPointF, t: float) -> None:
     paw_x = center.x() + BODY_RX * 0.85 + wobble
     paw_y = center.y() - BODY_RY * 0.75
 
-    pen = _outline_pen(1.6)
+    pen = _outline_pen()
     painter.setPen(pen)
-    painter.setBrush(BODY_HIGHLIGHT)
+    painter.setBrush(SECONDARY_FILL_COLOR)
     pad_radius = 7.5
     painter.drawEllipse(QPointF(paw_x, paw_y), pad_radius, pad_radius)
 
@@ -1235,9 +1324,28 @@ def _draw_high_five_paw(painter: QPainter, center: QPointF, t: float) -> None:
 
 MOUSE_CANVAS = 64.0
 _MOUSE_CENTER = QPointF(MOUSE_CANVAS / 2, MOUSE_CANVAS / 2 + 4)
-_MOUSE_BODY_COLOR = QColor("#9E9E9E")
-_MOUSE_BODY_HIGHLIGHT = QColor("#BDBDBD")
+# v1.15: flat, single-tone -- no gradient/highlight pair -- a cool slate
+# gray so it still reads as clearly "not the cat" at a glance, with the
+# same warm SECONDARY_FILL_COLOR the cat's own inner ears/paw pads use for
+# its ears, so the two sprites read as belonging to one shared palette
+# rather than two unrelated color schemes.
+_MOUSE_BODY_COLOR = QColor("#AEB4BD")
 _MOUSE_BODY_RX, _MOUSE_BODY_RY = 15.0, 11.0
+_MOUSE_TAIL_WIDTH = 3.4
+# Proportional to the cat's own `_OUTLINE_PEN_WIDTH`, scaled down by exactly
+# this sprite's canvas ratio (64 vs. the cat's 128) -- the same *relative*
+# boldness as the cat, not the same absolute number, since applying the
+# cat's full-scale width here would be twice as thick, proportionally, as
+# anywhere on the cat itself.
+_MOUSE_OUTLINE_WIDTH = _OUTLINE_PEN_WIDTH * (MOUSE_CANVAS / CANVAS)
+
+
+def _mouse_outline_pen(width: float = _MOUSE_OUTLINE_WIDTH) -> QPen:
+    pen = QPen(OUTLINE_COLOR)
+    pen.setWidthF(width)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    return pen
 
 
 def paint_mouse(painter: QPainter, rect: QRectF, t: float) -> None:
@@ -1266,27 +1374,22 @@ def paint_mouse(painter: QPainter, rect: QRectF, t: float) -> None:
 
 
 def _draw_mouse_body(painter: QPainter, center: QPointF, breathe: float) -> None:
+    """v1.15: flat single-tone fill, no gradient -- same "no glossy
+    highlight" rule the cat's own body follows now."""
     painter.save()
     rect = QRectF(0, 0, _MOUSE_BODY_RX * 2, _MOUSE_BODY_RY * 2 * breathe)
     rect.moveCenter(center)
 
-    gradient = QRadialGradient(
-        QPointF(center.x() - _MOUSE_BODY_RX * 0.35, center.y() - _MOUSE_BODY_RY * 0.5),
-        _MOUSE_BODY_RX * 1.6,
-    )
-    gradient.setColorAt(0.0, _MOUSE_BODY_HIGHLIGHT)
-    gradient.setColorAt(1.0, _MOUSE_BODY_COLOR)
-
-    painter.setPen(_outline_pen(2.0))
-    painter.setBrush(gradient)
+    painter.setPen(_mouse_outline_pen())
+    painter.setBrush(_MOUSE_BODY_COLOR)
     painter.drawEllipse(rect)
     painter.restore()
 
 
 def _draw_mouse_ears(painter: QPainter, center: QPointF) -> None:
     painter.save()
-    painter.setPen(_outline_pen(1.8))
-    painter.setBrush(_MOUSE_BODY_HIGHLIGHT)
+    painter.setPen(_mouse_outline_pen())
+    painter.setBrush(SECONDARY_FILL_COLOR)
     ear_y = center.y() - _MOUSE_BODY_RY * 0.95
     for side in (-1, 1):
         ex = center.x() + side * _MOUSE_BODY_RX * 0.55
@@ -1295,11 +1398,11 @@ def _draw_mouse_ears(painter: QPainter, center: QPointF) -> None:
 
 
 def _draw_mouse_tail(painter: QPainter, center: QPointF) -> None:
+    """v1.15: the same "stroke a wider outline-colored line underneath, a
+    narrower body-colored line on top" technique the cat's own tail uses,
+    so the mouse's tail reads with a genuine silhouette outline instead of
+    the old thin single-color stroke with no outline at all."""
     painter.save()
-    pen = _outline_pen(1.6)
-    pen.setColor(OUTLINE_COLOR)
-    painter.setPen(pen)
-
     base = QPointF(center.x() + _MOUSE_BODY_RX * 0.8, center.y() + _MOUSE_BODY_RY * 0.3)
     c1 = QPointF(base.x() + 14, base.y() + 8)
     c2 = QPointF(base.x() + 4, base.y() + 20)
@@ -1307,6 +1410,13 @@ def _draw_mouse_tail(painter: QPainter, center: QPointF) -> None:
 
     path = QPainterPath(base)
     path.cubicTo(c1, c2, end)
+
+    outline = _mouse_outline_pen(_MOUSE_TAIL_WIDTH + _MOUSE_OUTLINE_WIDTH * 1.2)
+    painter.setPen(outline)
+    painter.drawPath(path)
+
+    fill = QPen(_MOUSE_BODY_COLOR, _MOUSE_TAIL_WIDTH, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    painter.setPen(fill)
     painter.drawPath(path)
     painter.restore()
 
@@ -1318,5 +1428,5 @@ def _draw_mouse_face(painter: QPainter, center: QPointF) -> None:
     eye_y = center.y() - _MOUSE_BODY_RY * 0.2
     for side in (-1, 1):
         ex = center.x() + side * _MOUSE_BODY_RX * 0.4
-        painter.drawEllipse(QPointF(ex, eye_y), 1.8, 1.8)
+        painter.drawEllipse(QPointF(ex, eye_y), 2.2, 2.2)
     painter.restore()

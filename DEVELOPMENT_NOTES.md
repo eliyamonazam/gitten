@@ -4073,3 +4073,299 @@ constants only -- confirmed via diff that no cat/mouse drawing function
 changed), `src/gitten/command_bar_window.py`. `window.py`, `settings_window.py`,
 `dashboard_window.py`, and every other cat/mouse-drawing part of `sprite.py`
 were **not** touched, confirmed via `git status` before committing.
+
+## 31. v1.15 -- the cat/mouse art, redrawn in a bold flat mascot style
+
+Input is `GITTEN_V1_15_SPEC.md`, Phase 3 (the last) of the visual-polish
+plan: replace the original v1 soft/glossy cat and mouse art with a bold,
+flat mascot look -- one uniform outline color/width everywhere, flat
+single-tone fills with no gradients, and the cat's own body color folded
+into `theme.ACCENT` itself. Every pose and animation timing had to stay
+exactly as before; only the drawing style changes. Built and verified in
+the spec's own 5-part order, each part checked with a real screenshot
+before moving on, exactly as instructed.
+
+### Shared infrastructure, set up once in Part 1
+
+- `OUTLINE_COLOR` is now `theme.TEXT_PRIMARY` and `BODY_COLOR` is now
+  `theme.ACCENT` -- both numerically unchanged from their old independent
+  hex values (`theme.py`'s own v1.13 docstring already documented reusing
+  these exact values verbatim), so this is a single-sourcing change, not a
+  new color. `theme.py`'s `ACCENT` definition got a short note added
+  pointing out the relationship now runs the other way (`sprite.BODY_COLOR`
+  imports from `theme`, not the reverse) so a future reader isn't confused
+  by the v1.13 docstring's original phrasing.
+- `_OUTLINE_PEN_WIDTH` bumped from 2.6 to 3.2 and, unlike before, is now
+  used unmodified at almost every call site in the main character's own
+  drawing code -- the old code passed a different width into nearly every
+  single `_outline_pen(...)` call (2.2, 2.4, 1.8, 2.0, 1.6, 1.4...); every
+  one of those per-element overrides was removed this round, per the
+  spec's explicit "not varying stroke weights per element" instruction.
+- `BODY_HIGHLIGHT` (the gradient's light stop) and `INNER_EAR_COLOR` are
+  gone. Two-tone details that used to lean on a highlight gradient (inner
+  ears, the nudge-wave paw, the high-five paw pad) now use a new flat
+  `SECONDARY_FILL_COLOR = theme.ACCENT_SOFT` -- one of `theme.py`'s own
+  existing plain constants (its "accent lightened toward white" variant)
+  rather than a new one-off hex invented just for this file.
+- A new `_draw_flat_eye_arc(painter, ex, ey, half_width, bulge, thickness)`
+  helper draws a bold, flat-**filled** crescent between two quadratic
+  curves -- the mascot-style replacement for the old thin single-stroke
+  closed-eye curve. Shared by every closed/squinted eye pose (idle, happy,
+  purr, deep sleep, and the sulking peek), each just passing a different
+  `bulge`/`thickness`/`half_width`, so all of them read as the same bold
+  shape language instead of each pose inventing its own curve. This is
+  also the piece that most directly answers the spec's "flat-filled,
+  bold-outlined... not tiny highlight dots, thin soft curves" instruction.
+
+### Part 1 -- body/ears/tail base shape + neutral idle, verified first
+
+`_draw_body` lost its `QRadialGradient` entirely -- a single flat
+`painter.setBrush(fill_color)` -- per the spec's explicit "this is an
+intentional style change, not something to preserve out of habit."
+Night-mode blending (`_blend_color`) now only blends the one flat body
+color toward the moonlit tone; there's no separate highlight color left to
+blend a second time.
+
+**The tail needed a real technique change, not just a color swap, to
+actually gain a genuine outline**: the old tail was a thick `BODY_COLOR`
+line stroke with a *second*, thin dark stroke traced down its own
+centerline -- which reads as a decorative seam, not a silhouette outline
+(an outline has to run along a shape's edges, not through its middle).
+Confirmed by literally looking at the old `assets/demo.png`'s "Purring"
+panel before touching the code: yes, that faint line down the tail was
+always a centerline seam, never an edge outline. Fixed with the standard
+"stroke behind fill" trick for turning a line into an outlined shape: the
+same path is stroked twice, once wider in `OUTLINE_COLOR` underneath, once
+at the tail's own width in `BODY_COLOR` on top.
+
+**A real bug this technique change surfaced, caught by actually looking at
+a live screenshot of the AWAY pose, not just the regular swaying tail in
+isolation**: the v1.8 AWAY pose's *curled* tail variant has its path's two
+endpoints only ~9 canvas units apart. With the new, much wider outline
+stroke and `RoundCap` line ends, the two end caps overlapped into one
+solid blob that swallowed the curl shape entirely and partly covered the
+closed eye next to it -- confirmed visually in both a live
+`grabWindow`-crop screenshot and a clean off-screen render before
+believing it was fixed. Two changes were needed together, not just a
+smaller number: (1) `_TAIL_OUTLINE_EXTRA` (how much wider the outline pass
+is than the fill) is a separate, smaller constant (2.4) rather than
+`_OUTLINE_PEN_WIDTH * 2`, since a literal "same width as every other
+shape" ring made the short curled path's round caps dominate; (2) the
+curled path's own control points were widened and moved lower/further back
+along the lying body (away from the face) so its two endpoints sit ~16
+units apart instead of ~9 -- confirmed by re-rendering after each change,
+not assumed fixed from the math alone. The regular swaying tail (whose
+endpoints were always well separated) needed no geometry change, only the
+outline technique.
+
+`_draw_idle_face` was rebuilt on `_draw_flat_eye_arc`; the mouth stayed a
+bold stroke (mouths in this style read fine as simple bold strokes -- the
+"flat-filled" instruction was primarily aimed at the eyes, which is where
+the old "tiny highlight dots, thin soft curves" detail actually lived).
+
+**Verified live, per the spec's explicit instruction, before touching
+anything else**: `KittenWindow.set_mood(Mood.IDLE)`, screenshotted via the
+v1.14-documented full-screen-grab-and-crop technique. Confirmed a flat
+coral body, a genuinely outlined tail, and bold flat crescent eyes, clearly
+reading as a different, bolder style than the old `assets/demo.png` side
+by side.
+
+**A real screenshot-environment quirk found and worth recording**: the
+live screenshot's body color rendered as a desaturated brown/tan instead
+of the expected coral. Chased down before assuming a code bug: an
+off-screen `QPixmap` render (bypassing the OS display compositor entirely)
+sampled the exact same body pixel at precisely `#E8935F` -- proving the
+*rendered* color is correct and the live screenshot's tint is a capture-
+path artifact, not a rendering bug. This machine's registry has a
+`bluelightreduction.settings` value present (consistent with, though not
+conclusively proving, Windows Night Light being active in this sandboxed
+session), which would explain a live full-screen grab picking up a warm
+color shift that an in-memory off-screen render never passes through.
+**Net effect on verification going forward this round**: live screenshots
+remained the primary check for shape, pose, and text/font rendering (per
+the spec), but color-accuracy claims were cross-checked against an
+off-screen render's exact sampled pixel value rather than trusted from a
+live screenshot's screen-composited tint alone -- the same "verify a claim
+the way it can actually be verified, don't just eyeball one imperfect
+channel" discipline this project's dev notes already model elsewhere (e.g.
+section 4's zombie-process detour, section 12's offscreen-fonts finding).
+
+### Part 2 -- happy, waiting, deep-sleep faces
+
+`_draw_happy_face`'s eyes moved onto `_draw_flat_eye_arc` with a negative
+`bulge` (curves upward, reading as a happy squint, mirroring idle's
+downward-curving crescent). `_draw_waiting_face`'s eyes/pupils/brow/mouth
+already used the bolder "filled white circle + solid pupil" idiom from the
+start (this pose was always closer to "flat filled bold" than the
+closed-eye poses were) -- just needed every custom pen width unified to
+the shared default and the pupil bumped slightly larger to match the new
+bolder weight. `_draw_sleep_face` (the v1.8 AWAY deep-sleep face) moved
+onto `_draw_flat_eye_arc` with a near-zero `bulge`, reading as a "more
+fully shut" bold sliver, distinct from idle's more open crescent -- the
+same distinction the old flat-line-vs-curve treatment was going for,
+carried into the new shape language.
+
+**Verified live**: `set_mood(HAPPY)`, `set_mood(WAITING)`, and
+`set_away(True)` each screenshotted in turn. The AWAY pose's tail-blob bug
+described above was caught during *this* part's live check (checking the
+deep-sleep face incidentally required rendering the curled tail for the
+first time this round) and fixed before moving on, per the spec's
+"verify... before moving to the next part" discipline -- not carried
+forward as a known issue.
+
+### Part 3 -- interaction poses: sulking, purr, high-five (plus focused/curious)
+
+The spec's own Part 3 list names "the sulking/reconciliation stages, the
+hover-purr face, the high-five pose" specifically; `focused`
+(test/build-running reaction) and `curious` (v1.6 new-app reaction) aren't
+named in that list but are the same category of thing (a standalone
+interaction/reaction overlay, not a mood face or a piece of chrome) and
+were folded into this same part rather than left stranded between Part 2
+and Part 4.
+
+- `_draw_purr_face`: eyes onto `_draw_flat_eye_arc` with a squint-scaled
+  `bulge` (the existing `squint` sine value now drives the crescent's
+  depth instead of a stroked curve's control-point offset), mouth stroke
+  unified.
+- `_draw_focused_face` / `_draw_curious_face`: both already used the bold
+  filled-circle-eye idiom; just unified every custom pen width to the
+  shared default and enlarged the pupils to match.
+- `_draw_face_turned` (the sulking stages): the seam line and stage 1-3
+  partial eye reveal both moved onto the shared outline width/the
+  `_draw_flat_eye_arc` helper (scaled by the existing `reveal` fraction),
+  so a mid-sulk peek reads as the same bold crescent shape as every other
+  closed-eye pose, just partially revealed.
+- `_draw_high_five_paw` / `_draw_nudge_wave` (the paw/wave overlays,
+  drawn regardless of mood/pose): switched from the removed
+  `BODY_HIGHLIGHT` to the new flat `SECONDARY_FILL_COLOR`, uniform outline.
+
+**Verified live** (`set_attention(SULKING, 0)`, `set_attention(SULKING,
+3)`, a real `enterEvent` via `_hovering = True` for purr, and
+`_high_fiving = True` for the paw overlay) plus an off-screen contact
+sheet for a cleaner side-by-side look at all four (and `focused`/`curious`
+separately) than the live desktop's own background clutter allowed for at
+this small a crop. All read as bold, consistent, and distinct from each
+other -- sulking stage 3 and purr look similar to each other (both are a
+near-full-face closed-eye crescent + smile), which was already true of the
+pre-v1.15 art and isn't something this round's restyling was asked to
+change (the two are never shown at the same time in practice, unlike the
+purr-vs-focused/curious-vs-focused precedence pairs this codebase's v1.5/
+v1.6 dev notes specifically verified with pixel-diffs, which *can* co-occur
+and so actually need to look different).
+
+### Part 4 -- status badges, streak star/crown, seasonal accessories
+
+None of these small icons had a gradient to remove (they were already
+flat-filled) except the birthday party hat's three-stop `QLinearGradient`
+rainbow cone, replaced with one flat `_PARTY_HAT_COLOR` (`#42A5F5`) --
+gradients are gone everywhere in this file now, not just on the body.
+
+**A genuine scale tradeoff, decided deliberately and documented rather
+than silently picking one number**: applying the character's own
+`_OUTLINE_PEN_WIDTH` (3.2) literally to these much smaller icons (some, like
+the lightning bolt, only ~6 canvas units across) would swallow them into
+unrecognizable blobs -- confirmed by actually rendering one at that width
+before deciding against it. A second shared constant,
+`_SMALL_ICON_OUTLINE_WIDTH = 1.6`, is used uniformly across every badge,
+the streak star/crown, and every seasonal accessory instead -- still a
+real, uniform bump from the old per-icon range of 1.0-1.2 (a different
+value nearly every time), and still exactly *one* width for this whole
+tier of chrome, holding to the spec's "not varying stroke weights per
+element" instruction at a second, smaller scale appropriate to these
+icons' size rather than literally reusing the main character's own number.
+
+**Verified live** (`set_badge`, `set_streak`, `set_accessory` cycled
+through several combinations) plus an 11-panel off-screen contact sheet
+covering every badge, all three streak tiers, and all three accessories at
+once for a clean, uncluttered look at every small icon side by side --
+all bold, legible, and consistent with each other.
+
+### Part 5 -- the mouse sprite
+
+Same style rules, applied at the mouse's own smaller 64-unit canvas (half
+the cat's 128): `_draw_mouse_body` lost its `QRadialGradient` for a flat
+`_MOUSE_BODY_COLOR` (`#AEB4BD`, a cool flat slate gray -- picked so the
+mouse still reads as clearly "not the cat" at a glance, per the spec's
+"its own small palette choice is your call"). The mouse's ears now use the
+cat's own `SECONDARY_FILL_COLOR` rather than a second gray-highlight tone,
+a deliberate small touch tying the two sprites into one shared palette
+family rather than two unrelated color schemes, per the spec's "should
+read as belonging to the same visual world as the restyled cat." The tail
+got the same "wider outline stroke underneath, narrower fill stroke on
+top" treatment as the cat's own tail, so it gains a real silhouette outline
+instead of the old plain, unoutlined single stroke.
+
+**Outline width was scaled, not copied verbatim, and this is deliberate**:
+`_MOUSE_OUTLINE_WIDTH = _OUTLINE_PEN_WIDTH * (MOUSE_CANVAS / CANVAS)` --
+exactly half the cat's own width, matching the mouse canvas's exact
+half-scale, so the *relative* boldness matches the cat instead of the
+*absolute* number (which would read twice as heavy, proportionally, on
+the smaller sprite).
+
+**Verified live**: a real `MouseWindow.show_at(...)`, screenshotted via the
+same crop technique, plus a clean off-screen render. Reads as a small,
+bold, flat companion creature that clearly belongs next to the restyled
+cat -- round slate body, peachy ears matching the cat's own inner-ear/
+paw-pad tone, bold outlined tail, solid dot eyes.
+
+### `assets/demo.png` regenerated
+
+Same 6-panel composition as the existing image (Happy+Low Battery,
+30-Day Streak, Birthday, Purring, Sulking, Curious) for an apples-to-apples
+before/after comparison, regenerated via the same off-screen-`QPixmap`
+technique used originally -- run on the real `windows` Qt platform plugin
+rather than `QT_QPA_PLATFORM=offscreen`, per the v1.6-era lesson recorded
+in section 17 (offscreen has zero installed fonts, so any drawn text comes
+out as tofu boxes; this image's own panel labels are drawn text). Comparing
+it side by side against the pre-v1.15 image: every panel now shows a flat
+coral body with no glossy highlight, a uniformly bold outline on every
+shape including the tail (which now has a real visible ring around its
+silhouette instead of no outline at all), and bold simplified crescent
+eyes instead of thin soft curves -- genuinely, clearly a different,
+bolder style, not a subtle palette tweak. Saved over the existing
+`assets/demo.png`; `README.md` already references this exact filename with
+no hardcoded dimensions in its text, so no README changes were needed.
+
+### Does this genuinely read as one cohesive, improved character across every pose? Yes, with one honest caveat
+
+Every pose shares the same outline color/width (at its own appropriate
+scale), the same flat-fill discipline, and the same crescent-eye shape
+language for every closed/squinted expression -- side by side, the whole
+set reads as one consistent design system applied to one character,
+clearly more polished than the old soft-gradient look, matching this
+project's own "declare success only if it's actually true" standard from
+v1.13/v1.14. **The one caveat, disclosed rather than smoothed over**:
+sulking stage 3 and the purr face are visually quite similar to each
+other now (both a near-full-face bold closed-eye crescent + smile) --
+this was already true before this round's restyling and the spec never
+asked this round to address it (the two poses are never shown
+simultaneously, unlike the hover/focused/curious triple this codebase has
+specifically pixel-diff-verified as needing to be distinguishable from
+each other), so it wasn't treated as a defect to fix, but it's recorded
+here rather than left unmentioned.
+
+### Testing
+
+`pytest -q` -> unchanged at **234/234 passed** throughout (this is pure
+`QPainter` drawing code with no branching logic worth unit testing in
+isolation, the same standard `sprite.py` has always been held to -- see
+section 12's Feature 3 for why this file has never had a `test_sprite.py`).
+Every part above was verified with a real, non-offscreen `KittenWindow`/
+`MouseWindow`, screenshotted via the full-screen-grab-and-crop technique
+v1.14's dev notes documented for this sandbox's `grabWindow(winId)`-comes-
+back-black limitation (confirmed still necessary and still working, so
+that workaround didn't need re-discovering), plus off-screen `QPixmap`
+contact sheets for cleaner side-by-side comparisons than the live
+desktop's own background clutter allowed at small crop sizes. `tasklist`
+was checked clean after every live script run. All scratch scripts and
+screenshots were kept out of the repo (scratchpad-only), per this
+project's standing convention.
+
+### Files changed this round
+
+`src/gitten/sprite.py` (every cat/mouse drawing function; the bubble/
+alarm-icon code from v1.14 was deliberately left untouched, confirmed via
+diff), `src/gitten/theme.py` (a small docstring note on `ACCENT`, no value
+change), `assets/demo.png` (regenerated). `window.py`,
+`command_bar_window.py`, `settings_window.py`, `dashboard_window.py` were
+**not** touched, confirmed via `git status` before committing.

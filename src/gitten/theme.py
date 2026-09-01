@@ -53,8 +53,13 @@ from PySide6.QtWidgets import QPushButton
 
 # -- Palette ------------------------------------------------------------
 
-# Primary accent: the cat's own coral body color (sprite.BODY_COLOR),
-# reused verbatim rather than reinvented -- see the module docstring.
+# Primary accent: the cat's own coral body color, reused verbatim rather
+# than reinvented -- see the module docstring for the v1.13 audit that
+# picked this value from what was then `sprite.BODY_COLOR`. As of v1.15
+# the relationship runs the other way: `sprite.BODY_COLOR` is now literally
+# `theme.ACCENT` (imported from here), the last piece of the v1.13-v1.15
+# visual-polish plan tying the character itself into this same palette --
+# this is still the one place the actual value is defined.
 ACCENT = QColor("#E8935F")
 ACCENT_HOVER = QColor("#DC7F45")  # a touch darker/more saturated, for :hover
 ACCENT_PRESSED = QColor("#C96B32")  # darker again, for :pressed
