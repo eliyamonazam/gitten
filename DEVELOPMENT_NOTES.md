@@ -3846,3 +3846,31 @@ accurate rather than showing a stale pre-v1.13 look immediately after this
 round). `command_bar_window.py`, `window.py` (the nudge bubble/inbox
 panel), and `sprite.py` were **not** touched, confirmed via `git status`
 before committing, per the spec's explicit scope.
+
+## 28. Housekeeping: git history cleanup, removed AI attribution trailers
+
+This is a portfolio project, so it should read as the author's own
+authorship history rather than showing tooling attribution. All 31
+existing commits (from the initial commit through v1.13) had a
+`Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` and a
+`Claude-Session: https://claude.ai/code/...` trailer appended to their
+messages; 19 of the 31 had them.
+
+Fixed in two parts:
+
+- **Going forward**: `~/.claude/settings.json` now sets
+  `attribution.commit` and `attribution.pr` to empty strings, so future
+  commits and PRs stop getting these trailers appended automatically.
+- **Existing history**: rewrote every commit message on `main` with
+  `git filter-branch --msg-filter` (a small Python filter stripping any
+  line starting with `Co-Authored-By: Claude`, `Claude-Session:`, or
+  otherwise mentioning "Generated with ... Claude" / a `claude.ai/code`
+  link, plus trailing blank lines). This only touched commit message
+  text -- trees (diffs), author/committer dates, and commit order were
+  verified identical before and after via `git diff --stat` against a
+  `backup-before-attribution-cleanup` tag and a full date/subject/order
+  diff. Commit hashes changed as an unavoidable consequence of rewriting
+  history. Force-pushed the rewritten history to `origin/main` with
+  `--force-with-lease` (safe here: solo project, no other collaborators,
+  no forks/PRs against the old history). Verified afterward that
+  `git log --all` contains no mention of "Claude" anywhere.
