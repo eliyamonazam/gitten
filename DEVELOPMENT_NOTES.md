@@ -3898,3 +3898,178 @@ being seen on GitHub was the Contributors graph still showing cached
 data from before the `#28` force-push; GitHub can take a while (up to
 about a day, sometimes needing a hard refresh) to recompute that graph
 after a history rewrite.
+
+## 30. v1.14 -- the design system, applied to the command bar & every bubble type
+
+Input is `GITTEN_V1_14_SPEC.md`, Phase 2 of the visual-polish plan v1.13
+started: apply `theme.py`'s palette to everything still drawn with ad hoc
+colors via raw `QPainter` calls -- `command_bar_window.py`'s input panel,
+and the two bubble types (`window.py`'s regular nudge/one-liner bubble and
+the v1.10 reminder-alert styling) -- without touching the cat/mouse sprite
+art itself (Phase 3, a separate future round).
+
+### A scope question worth resolving explicitly before writing any code
+
+The spec's hand-off prompt says "don't touch `sprite.py` this round," but
+its own Scope section immediately qualifies that as "the cat/mouse sprite
+art itself is Phase 3... don't touch `sprite.py`'s **cat/mouse drawing**
+this round" -- and Section 3 explicitly requires re-styling the
+reminder-alert bubble (the amber fill, the bold border, the alarm-clock
+icon). Checked where that bubble is actually drawn before assuming either
+reading: `_draw_speech_bubble`, `_draw_alarm_icon`, `nudge_bubble_size`,
+and the `_ALERT_FILL_COLOR`/`_ALERT_BORDER_COLOR` constants all live in
+`sprite.py`, not `window.py` (`window.py` only calls into them for layout/
+timing -- see the v1.10 bugfix entry in section 22 for how that split came
+to be). Grepped `window.py` for any bubble color to be sure it wasn't
+sourced there instead -- it isn't. Given that, fulfilling Section 3 at all
+*requires* touching `sprite.py`'s bubble-drawing functions; the prohibition
+is read here as scoped to the cat/mouse body/face/ears/tail/badges/streak-
+icon rendering (everything Phase 3 will eventually reskin), not to the
+speech-bubble code that happens to live in the same file. This is a
+judgment call, so it's recorded here per this project's own "flag it
+plainly rather than ship quietly" standard, not just assumed silently:
+**only `_draw_speech_bubble`, `nudge_bubble_size`, `_draw_alarm_icon`, and
+the alert/bubble color constants were touched in `sprite.py`** -- diffed
+against `git status`/`git diff` before committing to confirm no cat/mouse
+drawing function (`paint_kitten`'s body/ears/tail/face branches, badges,
+streak icons, particles, mouse sprite) changed a single line.
+
+### Command bar: a genuine re-skin, not just re-sourced constants
+
+`command_bar_window.py`'s backdrop used to be a dark, near-opaque
+`rgba(32, 32, 36, 235)` HUD-style panel with a light gray border --
+explicitly called out in `theme.py`'s own v1.13 docstring as one of the
+colors that round deliberately left untouched. Per the spec's "it currently
+doesn't share a visual language with Settings/Dashboard at all," this
+became a real visual change, not a same-color relabeling: `_BACKDROP_COLOR`
+is now `theme.SURFACE_CARD` (white), `_BORDER_COLOR` is `theme.ACCENT`
+(coral) rather than `theme.py`'s resting `BORDER` tone -- deliberately,
+since this popup is only ever on screen while its `QLineEdit` already holds
+real keyboard focus (it hides itself on `FocusOut`), the same state
+Settings' own `QLineEdit:focus` rule turns coral for -- and `_CORNER_RADIUS`/
+`_PADDING` now read `theme.RADIUS`/`theme.SPACING_SM` directly (the latter
+was already numerically 8, same as before, but now single-sourced instead
+of a second hardcoded `8`). The `QLineEdit`'s own small inline stylesheet
+(text/selection colors, font) was rebuilt from `theme.TEXT_PRIMARY`/
+`theme.ACCENT`/`theme.FONT_FAMILY`/`theme.FONT_SIZE_BASE` via `.name()`
+instead of the old hardcoded `white`/`#4a90d9`/`14px`. All of `theme.py`'s
+values are used as the plain `QColor`/`int`/`str` module constants directly
+in the `QPainter` calls and the small inline QSS string -- not a second set
+of hardcoded hex literals that happen to match, per the spec's explicit
+instruction.
+
+### Bubbles: new theme-sourced constants in `sprite.py`, colors chosen to widen the alert/regular contrast, not flatten it
+
+Two new small blocks of module-level constants in `sprite.py`, both reading
+straight from `theme.py`:
+
+- `_ALERT_FILL_COLOR`/`_ALERT_BORDER_COLOR` now *are* `theme.WARNING_FILL`/
+  `theme.WARNING_BORDER` (previously their own independent `QColor("#FFF3E0")`/
+  `QColor("#FB8C00")` literals that merely happened to equal what `theme.py`
+  also independently hardcoded -- exactly the "two sources of truth that
+  could silently drift apart" risk the spec's Important Constraint warns
+  about). Numerically unchanged, now structurally impossible to drift.
+- New `_BUBBLE_FILL_COLOR = theme.SURFACE_CARD`, `_BUBBLE_BORDER_COLOR =
+  theme.BORDER`, `_BUBBLE_TEXT_COLOR = theme.TEXT_PRIMARY`,
+  `_BUBBLE_PADDING_X = theme.SPACING_SM`, `_BUBBLE_PADDING_Y =
+  theme.SPACING_XS` replace the regular bubble's old flat-white fill +
+  near-black (`OUTLINE_COLOR`) 1.6px border + hardcoded `8.0`/`5.0` padding.
+  The regular bubble's border also thinned from 1.6px to 1.2px to read as
+  the same soft, light-bordered "card" convention Settings' `QLineEdit`/
+  `QListWidget` already use, rather than the old bold black comic-panel
+  outline.
+
+**This was a deliberate design choice, not an oversight, and it's the
+opposite of the risk Section 3 warned about**: softening the *regular*
+bubble's border while leaving the alert bubble's bold, saturated amber
+border untouched makes the two types *more* visually distinct side by
+side than before, not less -- confirmed numerically (see Testing) rather
+than assumed. Nothing about applying the shared palette here flattened the
+two bubble types toward the same look, so there is no "worth flagging as a
+regression" case to raise for Section 3, unlike v1.13's list-scrollbar
+trade-off.
+
+The font-family string in both `nudge_bubble_size` and `_draw_speech_bubble`
+now reads `theme.FONT_FAMILY` instead of a second hardcoded `"Segoe UI"`
+literal (still 9pt in canvas units -- `theme.FONT_SIZE_BASE` (13) is a real-
+pixel size tuned for Settings/Dashboard's actual `QDialog`s and would be
+wildly oversized against this bubble's 128-unit canvas, so it was
+deliberately *not* substituted in, per the spec's "the same values" intent
+rather than its letter -- pulling in a real-pixel constant here would be a
+regression, not a re-skin). The corner radius (`6.0`, `drawRoundedRect`) and
+the alert-only entrance/fade timing constants (`_ALERT_POP_SECONDS`,
+`NUDGE_DURATION_SECONDS`, `REMINDER_NUDGE_DURATION_SECONDS`) were left
+untouched -- the spec calls out "color/spacing constants" for bubbles
+specifically (radius/timing aren't mentioned, unlike the command bar's
+explicit "palette, corner-radius, and spacing"), and Section 2 explicitly
+requires preserving the existing entrance/fade timing exactly.
+
+### A live-screenshot capture technique note worth recording for future sessions
+
+`QScreen.grabWindow(window.winId())` against this project's translucent,
+layered, frameless top-level windows (`KittenWindow`, `CommandBarWindow`)
+came back **solid black** in this sandboxed session, even though the same
+call against a plain opaque `QLabel` worked correctly and `grabWindow(0)`
+(the full screen) correctly captured real, normally-composited desktop
+content (confirmed with a throwaway comparison script before trusting
+either result). This is the same category of "layered/topmost window
+screenshot quirk in this particular sandbox" already recorded in this
+file's very first debugging section (see section 4) -- that session
+abandoned live-window screenshots entirely in favor of off-screen
+`QPixmap` renders; this session found a workaround instead, since the spec
+explicitly requires a real live capture: **grab the full screen
+(`grabWindow(0)`) and crop to the target window's `frameGeometry()`,
+scaled by `screen.devicePixelRatio()`**, rather than grabbing the window
+directly. This produced correct, real screenshots for all three captures
+below. Worth trying first, before falling back to off-screen rendering, in
+any future session that needs to screenshot one of this app's own
+translucent top-level windows live.
+
+### Testing
+
+- `pytest -q` -> unchanged at **234/234 passed** (no pure-logic module
+  touched -- this is `QPainter`/QSS styling only).
+- **Live, real screenshots**, via a scratch script (`live_v14_test.py`,
+  scratchpad-only, not committed) that constructed a real, non-offscreen
+  `GittenApp` against a real scratch git repo (repo/path pre-seeded into
+  `QSettings` before construction, per the standing rule v1.13's dev notes
+  already recorded) and used the full-screen-crop technique above:
+  - The command bar (`_show_command_bar()`), captured while genuinely
+    focused and visible: a white rounded card with a coral border and
+    dark placeholder text, immediately recognizable as the same family as
+    Settings' `QLineEdit`/Save-button coral, next to the cat.
+  - A regular nudge (`window.show_nudge("Commits today: 1")`): a soft
+    white bubble with a thin, light border and near-black text -- reads as
+    a themed card now, not the old bold black-outlined comic bubble.
+  - **A real, live-triggered reminder alert**: `_dispatch_command("remind",
+    "2s take a break")` through the actual command-dispatch path, then the
+    process was pumped for ~9.5s (past the real ~7s `SYSTEM_SAMPLE_INTERVAL_MS`
+    tick, no manual `show_nudge` call) until `window._nudge_alert` was
+    confirmed `True` and `window._nudge_text == "take a break"` from the
+    real reminder machinery, then captured: a bold amber-bordered, amber-
+    filled bubble with bold text and the small ringing alarm-clock icon,
+    clearly and immediately distinguishable from the regular nudge
+    screenshot above sitting right next to it.
+  - `tasklist` confirmed no stray `python.exe` processes after the script
+    exited (it never calls `app.exec()`, matching this project's existing
+    live-script convention).
+- **Numeric distinctness check**, the same standard section 22 already
+  held itself to: rendering the same text (`"take a break"`) through
+  `_draw_speech_bubble` with `alert=False` vs `alert=True` off-screen and
+  diffing every pixel came back **3,617 differing pixels out of 13,200**
+  (~27%) -- confirms the two bubble types remain a substantial, genuine
+  visual difference after the re-skin, not a subtle tweak that only reads
+  as distinct by chance of eyeballing.
+- Confirmed both (a) the command bar and both bubble types now visually
+  belong to the same white/warm-card, coral-accent, light-border family as
+  `assets/settings.png`, and (b) the reminder alert is still unmistakably
+  more urgent than the regular nudge side by side -- both true, nothing to
+  disclose as a regression this round.
+
+### Files changed this round
+
+`src/gitten/sprite.py` (bubble-drawing functions and alert/bubble color
+constants only -- confirmed via diff that no cat/mouse drawing function
+changed), `src/gitten/command_bar_window.py`. `window.py`, `settings_window.py`,
+`dashboard_window.py`, and every other cat/mouse-drawing part of `sprite.py`
+were **not** touched, confirmed via `git status` before committing.

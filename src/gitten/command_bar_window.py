@@ -28,28 +28,42 @@ never actually paints its stylesheet's background/border unless
 get this for free from their own default `paintEvent`, a bare `QWidget`
 does not) -- see DEVELOPMENT_NOTES.md's v1.9 bugfix entry for how this was
 caught and confirmed live.
+
+**v1.14**: the backdrop used to be a dark, near-opaque HUD-style panel with
+no relation to `theme.py` (which didn't exist yet). It's now `theme.py`'s
+own light warm-card palette -- the same `SURFACE_CARD` fill and `RADIUS`
+corner radius every themed `QLineEdit` in Settings uses -- with an `ACCENT`
+border rather than `theme.py`'s resting `BORDER` tone, since this bar is
+only ever on screen while its input already has real keyboard focus (it
+hides itself on focus-out), the same visual state Settings' own
+`QLineEdit:focus` rule turns coral for. `theme.py`'s plain `QColor`
+constants are used directly in the `QPainter` calls below, not a second set
+of hardcoded hex strings that happen to look similar -- see
+DEVELOPMENT_NOTES.md's v1.14 entry.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QWidget
+
+from gitten import theme
 
 COMMAND_BAR_WIDTH = 260
 COMMAND_BAR_HEIGHT = 40
 
-# The backdrop's visual style -- a near-opaque dark rounded panel with a
-# faint lighter border, matching the inbox panel's dark-panel palette
-# (window.py's `_build_inbox_panel`) so the popup reads as part of the same
-# app rather than a mismatched new look.
-_BACKDROP_COLOR = QColor(32, 32, 36, 235)
-_BORDER_COLOR = QColor(110, 110, 118, 255)
-_CORNER_RADIUS = 10
+# The backdrop's visual style, sourced directly from theme.py's plain
+# constants (see the module docstring) so this popup shares its palette,
+# corner-radius, and spacing with Settings/Dashboard instead of the old
+# unrelated dark-panel look.
+_BACKDROP_COLOR = theme.SURFACE_CARD
+_BORDER_COLOR = theme.ACCENT
+_CORNER_RADIUS = theme.RADIUS
 # Padding between the window edge and the QLineEdit, so the rounded
 # backdrop shows a clear margin all the way around the text rather than
 # being flush with it.
-_PADDING = 8
+_PADDING = theme.SPACING_SM
 
 
 class CommandBarWindow(QWidget):
@@ -65,13 +79,15 @@ class CommandBarWindow(QWidget):
 
         self._input = QLineEdit(self)
         self._input.setPlaceholderText("type a command... (help)")
-        # High-contrast white text/selection against the dark backdrop
-        # paintEvent draws below; the QLineEdit itself stays fully
-        # transparent so the rounded backdrop shows through around it.
+        # theme.TEXT_PRIMARY/ACCENT text/selection against the light
+        # SURFACE_CARD backdrop paintEvent draws below; the QLineEdit itself
+        # stays fully transparent so the rounded backdrop shows through
+        # around it. theme.py's constants are pulled in directly (via
+        # `.name()`) rather than a second hardcoded set of hex strings.
         self._input.setStyleSheet(
-            "background: transparent; color: white; border: none;"
-            "font-size: 14px; selection-background-color: #4a90d9;"
-            "selection-color: white;"
+            f"background: transparent; color: {theme.TEXT_PRIMARY.name()}; border: none;"
+            f'font-family: "{theme.FONT_FAMILY}"; font-size: {theme.FONT_SIZE_BASE}px;'
+            f"selection-background-color: {theme.ACCENT.name()}; selection-color: white;"
         )
         self._input.returnPressed.connect(self._submit)
         self._input.installEventFilter(self)

@@ -24,6 +24,7 @@ from PySide6.QtGui import (
     QRadialGradient,
 )
 
+from gitten import theme
 from gitten.mood import Mood
 from gitten.status_badge import Badge
 
@@ -971,13 +972,30 @@ def _draw_nudge_wave(painter: QPainter, center: QPointF, t: float) -> None:
 _NUDGE_BUBBLE_BOTTOM_OFFSET = BODY_RY * 1.05
 
 # v1.10: a distinctly more "alert" treatment for reminder-sourced nudges,
-# reusing this codebase's existing low-battery-badge amber (`#FB8C00`,
-# status_badge Badge.LOW_BATTERY's color) rather than inventing a new
-# "urgent" color from scratch -- it already reads as "pay attention" here.
-_ALERT_FILL_COLOR = QColor("#FFF3E0")
-_ALERT_BORDER_COLOR = QColor("#FB8C00")
+# reusing this codebase's existing low-battery-badge amber rather than
+# inventing a new "urgent" color from scratch -- it already reads as "pay
+# attention" here. v1.14: sourced directly from theme.py's plain
+# WARNING_FILL/WARNING_BORDER constants (theme.py itself defines those as
+# this exact amber, reused verbatim -- see its own module docstring) rather
+# than a second pair of hardcoded hex literals that happen to match.
+_ALERT_FILL_COLOR = theme.WARNING_FILL
+_ALERT_BORDER_COLOR = theme.WARNING_BORDER
 _ALERT_ICON_RESERVE = 20.0
 _ALERT_POP_SECONDS = 0.22
+
+# v1.14: the regular (non-alert) bubble's own fill/border/text, sourced from
+# theme.py so it reads as belonging to the same design system as
+# Settings/Dashboard -- a themed card (SURFACE_CARD fill, soft BORDER
+# outline, TEXT_PRIMARY ink) instead of the old flat-white/near-black
+# "comic outline" look. Deliberately much softer than the alert bubble's
+# bold, saturated amber border above, so unifying the palette *widens*
+# the two bubble types' contrast rather than flattening it -- see
+# DEVELOPMENT_NOTES.md's v1.14 entry.
+_BUBBLE_FILL_COLOR = theme.SURFACE_CARD
+_BUBBLE_BORDER_COLOR = theme.BORDER
+_BUBBLE_TEXT_COLOR = theme.TEXT_PRIMARY
+_BUBBLE_PADDING_X = float(theme.SPACING_SM)
+_BUBBLE_PADDING_Y = float(theme.SPACING_XS)
 
 
 def nudge_bubble_size(text: str, alert: bool) -> tuple[float, float]:
@@ -989,9 +1007,9 @@ def nudge_bubble_size(text: str, alert: bool) -> tuple[float, float]:
     reply without clipping it -- see the v1.10 bugfix entry in
     DEVELOPMENT_NOTES.md for why the window has to grow at all rather than
     just repositioning the bubble within a fixed size."""
-    font = QFont("Segoe UI", 9, QFont.Bold if alert else QFont.Normal)
+    font = QFont(theme.FONT_FAMILY, 9, QFont.Bold if alert else QFont.Normal)
     metrics = QFontMetricsF(font)
-    padding_x, padding_y = 8.0, 5.0
+    padding_x, padding_y = _BUBBLE_PADDING_X, _BUBBLE_PADDING_Y
     icon_reserve = _ALERT_ICON_RESERVE if alert else 0.0
     tw = metrics.horizontalAdvance(text)
     th = metrics.height()
@@ -1011,9 +1029,9 @@ def _draw_speech_bubble(
     painter.save()
     painter.setOpacity(max(0.0, min(1.0, opacity)))
 
-    font = QFont("Segoe UI", 9, QFont.Bold if alert else QFont.Normal)
+    font = QFont(theme.FONT_FAMILY, 9, QFont.Bold if alert else QFont.Normal)
     painter.setFont(font)
-    padding_x = 8.0
+    padding_x = _BUBBLE_PADDING_X
     icon_reserve = _ALERT_ICON_RESERVE if alert else 0.0
     bubble_w, bubble_h = nudge_bubble_size(text, alert)
 
@@ -1045,9 +1063,9 @@ def _draw_speech_bubble(
         painter.scale(scale, scale)
         painter.translate(-bubble.center())
 
-    fill = _ALERT_FILL_COLOR if alert else WHITE
-    border = _ALERT_BORDER_COLOR if alert else OUTLINE_COLOR
-    pen = _outline_pen(2.2 if alert else 1.6)
+    fill = _ALERT_FILL_COLOR if alert else _BUBBLE_FILL_COLOR
+    border = _ALERT_BORDER_COLOR if alert else _BUBBLE_BORDER_COLOR
+    pen = _outline_pen(2.2 if alert else 1.2)
     pen.setColor(border)
     painter.setPen(pen)
     painter.setBrush(fill)
@@ -1069,10 +1087,10 @@ def _draw_speech_bubble(
             bubble.width() - padding_x * 2 - icon_reserve,
             bubble.height(),
         )
-        painter.setPen(OUTLINE_COLOR)
+        painter.setPen(_BUBBLE_TEXT_COLOR)
         painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
     else:
-        painter.setPen(OUTLINE_COLOR)
+        painter.setPen(_BUBBLE_TEXT_COLOR)
         painter.drawText(bubble, Qt.AlignCenter, text)
     painter.restore()
 
