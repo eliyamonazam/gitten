@@ -3874,3 +3874,27 @@ Fixed in two parts:
   `--force-with-lease` (safe here: solo project, no other collaborators,
   no forks/PRs against the old history). Verified afterward that
   `git log --all` contains no mention of "Claude" anywhere.
+
+## 29. Follow-up: GitHub still showed Claude as a contributor -- checked author/committer identity, found nothing to fix
+
+The `#28` cleanup only rewrote commit message *text* (the trailer lines).
+GitHub's Contributors graph is actually keyed off each commit's
+Author/Committer identity fields, which are separate from the message
+and weren't inspected last time -- so it was worth checking directly
+rather than assuming the graph would just catch up.
+
+Ran, across the entire history:
+
+```
+git log --all --format='%an <%ae> / committer: %cn <%ce>' | sort -u
+```
+
+Result: a single line, `nolimiya <eliyamonazam84@gmail.com> / committer:
+nolimiya <eliyamonazam84@gmail.com>`, on every single commit. No
+Claude/Anthropic author or committer identity exists anywhere in this
+repo's history -- it never did. So there was nothing to rewrite here:
+no `filter-branch --env-filter`, no new force-push. What was actually
+being seen on GitHub was the Contributors graph still showing cached
+data from before the `#28` force-push; GitHub can take a while (up to
+about a day, sometimes needing a hard refresh) to recompute that graph
+after a history rewrite.
