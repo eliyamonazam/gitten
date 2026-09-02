@@ -201,6 +201,12 @@ them fully unit-testable without a display or real elapsed time -- see
 `tests/`. The Qt-facing code (`window.py`, `sprite.py`, `main.py`, and the
 window classes) stays comparatively thin wiring on top.
 
+Visually, everything now draws from one shared design system rather than
+each surface inventing its own colors: `theme.py` defines the palette
+(the cat's own coral body color is the primary accent), spacing, and
+corner radius once, and the cat sprite, the command bar, every speech
+bubble, and the Settings/Dashboard windows all read from it.
+
 ## Configuration
 
 Most day-to-day configuration now has a real UI: open the **settings
@@ -303,6 +309,7 @@ gitten/
 │   ├── command_bar_window.py       # the frameless popup for typed commands
 │   ├── commands.py                  # pure command parsing + reply formatting for the command bar
 │   ├── reminders.py                 # pure reminder parsing/scheduling/formatting + JSON persistence
+│   ├── theme.py                     # shared design system: palette, spacing, corner radius, QSS
 │   ├── settings_window.py          # the settings panel -- a normal window, 5 tabs
 │   └── dashboard_window.py         # the read-only dashboard -- a normal window
 ├── scripts/

@@ -4369,3 +4369,46 @@ diff), `src/gitten/theme.py` (a small docstring note on `ACCENT`, no value
 change), `assets/demo.png` (regenerated). `window.py`,
 `command_bar_window.py`, `settings_window.py`, `dashboard_window.py` were
 **not** touched, confirmed via `git status` before committing.
+
+## 32. Housekeeping: README touch-up for the v1.13-v1.15 visual-polish arc
+
+Input is `GITTEN_HOUSEKEEPING_3_BRIEF.md`. A lighter round than the
+section-28-era README overhaul -- a touch-up, not a rewrite. Read sections
+27, 30, and 31 above (the three visual-polish rounds) before writing
+anything, per the brief.
+
+Checked README.md for stale appearance wording first, per the brief's
+"if the feature list or 'how it's built' section describes the cat's
+appearance anywhere (soft/glossy, gradients, etc.), update it" instruction
+-- grepped for "soft", "glossy", "gradient", and "pixel-style" and found no
+matches anywhere in the file, so there was no stale wording to fix there.
+(`pyproject.toml`'s own `description` field still says "pixel-style
+kitten," which was already inaccurate before this round and is out of this
+brief's stated scope -- README.md only -- so left untouched rather than
+scope-creeping into a second file the brief didn't name.)
+
+Added the one thing that actually was missing: a short two-sentence
+mention of the shared design system in the "How it's built" section, right
+after the existing paragraph about pure-logic layers being unit-testable --
+naming `theme.py`, that the cat's coral body color is the primary accent,
+and that the sprite/command bar/every bubble/Settings/Dashboard all now
+read from the one palette instead of inventing their own colors. Also
+noticed `theme.py` itself was missing from the Project Structure file
+listing entirely (added in v1.13, never added to that list across three
+rounds of edits) -- added it in its alphabetical position with a one-line
+description, since a project-structure listing missing a real, load-bearing
+module is exactly the kind of staleness this touch-up exists to catch, even
+though the brief's three bullet points didn't name it explicitly.
+
+Version bumped `0.13.0` -> `0.16.0` in `pyproject.toml`, following this
+project's existing convention of one version-number bump per
+`vX.Y`-numbered round since the last housekeeping bump (the `81c7a12`
+housekeeping commit bumped `0.6.0` -> `0.13.0` to cover v1.6 through v1.12;
+this bump covers v1.13, v1.14, and v1.15 the same way).
+
+No code changed this round -- `README.md` and `pyproject.toml` only, so
+`pytest -q` wasn't expected to move and wasn't re-run for this round.
+
+### Files changed this round
+
+`README.md`, `pyproject.toml` (version only).
