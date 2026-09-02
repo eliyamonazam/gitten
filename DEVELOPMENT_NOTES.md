@@ -4412,3 +4412,306 @@ No code changed this round -- `README.md` and `pyproject.toml` only, so
 ### Files changed this round
 
 `README.md`, `pyproject.toml` (version only).
+
+## 33. v1.16 -- a genuine pixel-art redesign (Phase 4)
+
+Input is `GITTEN_V1_16_SPEC.md`, the last phase of the visual-polish plan:
+fully replace v1.15's bold-flat-*vector* mascot style (smooth
+`QPainterPath` shapes, one uniform outline width/color) with real pixel
+art -- a small, fixed logical grid of flat-filled squares per pose,
+upscaled with nearest-neighbor scaling, animated via a small number of
+discrete frames instead of continuous sine-driven breathing/swaying. Per
+the spec's explicit instruction, read section 31 (v1.15) in full first,
+since this round replaces that style rather than layering on top of it.
+Built and verified in the spec's own order: Part 0 (the technical
+foundation) in complete isolation first, then the 5 pose parts in order,
+each checked with a real render before moving on.
+
+### Part 0: the rendering engine, verified before any real pose existed
+
+New module `src/gitten/pixelart.py` -- the one shared engine every pose in
+`sprite.py` builds on, the same "shared infrastructure built once, reused
+everywhere" discipline `theme.py` and `particles.ParticleSystem` already
+established for their own concerns:
+
+- A **frame** is a `tuple[str, ...]` -- one character per logical pixel,
+  `.` for transparent, any other character a key into a small per-sprite
+  **palette** (`dict[str, str]`, character to hex color). This is the
+  spec's own suggested "small 2D grid where each cell maps to a color"
+  technique, written directly as Python literals in `sprite.py` -- a
+  standard, general pixel-art authoring convention, not tied to or
+  reproducing any specific existing project's own tooling or sprites, per
+  the spec's explicit originality note.
+- `render_frame(frame, palette)` draws one frame to an off-screen `QImage`
+  at its own logical grid resolution (one image pixel per grid cell), flat
+  fills only, no anti-aliasing -- cached by `(frame, palette)` since the
+  actual (frame, palette) space used in a steady-state paint loop is small
+  (a handful of poses x at most a couple of palette variants each, e.g.
+  day/night).
+- `draw_pixel_image(painter, image, rect)` scales that image up to fill an
+  arbitrary rect using **`Qt.FastTransformation`** (nearest-neighbor), and
+  additionally turns off the painter's own `SmoothPixmapTransform` render
+  hint for the draw call -- both matter: pre-scaling the pixmap with the
+  fast-transformation flag *and* disabling the painter's own smoothing hint
+  for the actual `drawPixmap`, since a smoothing-enabled painter can still
+  soften an already-crisply-scaled pixmap when it's composited through a
+  further transform (this codebase's own outer `painter.scale()` for
+  canvas-unit-to-device-pixel mapping).
+- `frame_index(t, num_frames, frame_seconds)` -- the one shared
+  discrete-animation convention every pose's own timer reuses, instead of
+  each pose inventing its own frame-cycling math.
+
+**Verified in isolation, before writing a single real pose**, per the
+spec's explicit "build and verify this first, on the simplest possible
+test case" instruction, two ways:
+
+1. A deterministic pixel-exactness check (not just eyeballing an image): a
+   2x2 placeholder grid (`RG`/`GB`) rendered, then scaled 100x per logical
+   pixel via `draw_pixel_image`, then sampled at the center of each of the
+   four resulting quadrants -- every sample came back an *exact* palette
+   color (`#ff0000`/`#00ff00`/`#00ff00`/`#0000ff`), and a full horizontal
+   sweep across the boundary between two cells showed **exactly one hard
+   transition** between exactly two distinct colors, not a gradient ramp.
+   This is strictly stronger evidence than "the picture looks blocky" --
+   it rules out any residual smoothing at any stage of the scale pipeline.
+2. The resulting scaled PNG was also opened and looked at directly: a
+   perfectly crisp 2x2 checkerboard with hard, right-angle edges between
+   the four color blocks, no blur anywhere.
+
+Only after both passed did any real cat/mouse pose get built.
+
+### Grid size, palette, and frame-timing decisions
+
+- **32x32 for the cat, 16x16 for the mouse/small chrome** -- the spec's own
+  suggested sizes, kept as-is after confirming (Part 1) that 32x32 leaves
+  enough resolution for legible ears/tail/face detail on the most-seen
+  pose. Badges/streak icons/seasonal accessories share the mouse's 16x16
+  grid rather than the cat's 32x32 -- the same "these can't take the main
+  character's own proportions literally" lesson v1.15's own Part 4 already
+  learned for its outline width (a full-scale grid would either vanish a
+  ~12-canvas-unit icon into 1-2px slivers, or force an oversized outline),
+  applied here to grid *resolution* instead of stroke width.
+- **A four-color palette per sprite** (outline, body, a secondary tone for
+  inner-ear/paw-pad detail, and white), within the spec's "roughly 4-6
+  colors" budget -- `theme.ACCENT`/`theme.ACCENT_SOFT`/`theme.TEXT_PRIMARY`
+  reused verbatim as the body/secondary/outline colors respectively,
+  continuing v1.15's own "the character's colors are single-sourced from
+  `theme.py`" discipline rather than resetting it. Night-mode tinting still
+  goes through the existing `_blend_color` helper, just applied to the
+  palette's one `"B"` entry now instead of a vector fill color.
+  Small-chrome icons (badges/streak/accessories/heart/exclaim/paw) each get
+  their own small dedicated palette instead of being limited to the cat's
+  four colors -- a witch hat needs black+purple, a pomegranate needs
+  red+green, and so on -- still a small, deliberate palette per icon, just
+  not literally the cat's own set.
+- **One shared frame-timing convention** (`pixelart.frame_index`), but a
+  different `frame_seconds` per pose tuned to how that pose used to
+  animate continuously: idle/happy breathe+blink at a slow 1.4s/frame,
+  purr's "vibration" squint at a brisk 0.45s/frame, the waiting mood's
+  nervous glance at 0.6s/frame (replacing what used to be a continuous
+  side-to-side sine), away's deep-sleep breathing at a slow 3.0s/frame.
+  Each is a judgment call translating a specific old continuous speed into
+  a specific new discrete cadence, not one global constant applied
+  everywhere.
+- **A dynamic `"F"` palette character** for anything that used to be a
+  runtime-computed color (a battery badge's own color + alpha pulse, a
+  streak tier's gray/gold) -- resolved to an actual hex/alpha string at
+  paint time and merged into that call's own palette dict, the same idiom
+  `_cat_palette`'s night-tint swap already uses for `"B"`. **A pulsing
+  alpha value is rounded to 2 decimal places before it enters the palette
+  dict** specifically so `pixelart.render_frame`'s cache (keyed on
+  `(frame, palette)`) doesn't mint a brand-new `QImage` on nearly every
+  single frame of a continuously-varying pulse -- documented directly in
+  both `pixelart.py`'s own cache docstring and at each call site, since
+  it's exactly the kind of thing a future session could silently regress
+  by inlining an unrounded value.
+
+### Compositing technique: each frame is one full 32x32 grid, hand-composed in the old vector code's own z-order
+
+Rather than a separate transparent image per body part re-composited at
+paint time (extra complexity for no real benefit at this scale), each pose
+is baked as **one complete 32x32 grid** at design time, built by stamping
+tail, then ears, then the body last (so the body's later fill covers both
+the tail's root and the ears' base), then the face on top -- the exact same
+back-to-front order the v1.15 vector code always drew in, just executed
+once per pose during authoring instead of every paint call. This is why a
+pixel-art ear still reads as "growing out of the head" and a pixel-art tail
+still reads as "rooted at the flank," the same effect the old code got from
+its own draw order.
+
+All poses share one fixed grid-to-canvas mapping
+(`_CAT_GRID_PX`/`_CAT_ANCHOR_COL`/`_CAT_ANCHOR_ROW`) since every frame was
+authored into the same absolute 32x32 coordinate space regardless of where
+that particular pose's body happens to sit within it (e.g. the AWAY pose's
+lying body sits a little lower in the grid than the sitting poses' body,
+but the anchor point is still the same fixed grid cell for every pose) --
+one shared mapping, not a per-pose special case.
+
+### Part-by-part build order and verification
+
+Mirrored v1.15's own sequencing exactly, per the spec's explicit
+instruction, each part checked with a real render before moving to the
+next -- **both** an off-screen `QPixmap` contact sheet through the actual,
+shipped `paint_kitten`/`paint_mouse` functions (not a synthetic prototype;
+run on the real `windows` Qt platform plugin, not `QT_QPA_PLATFORM=
+offscreen`, per the v1.6-era tofu-box-font lesson in section 17) **and** a
+real live, non-offscreen `KittenWindow`, screenshotted via the
+full-screen-grab-and-crop technique v1.14/v1.15's dev notes documented for
+this sandbox's `grabWindow(winId)`-comes-back-black limitation:
+
+1. **Body/idle pose.** Grid technique, palette, and a 2-frame breathe+blink
+   idle animation, gotten right on the single most-seen pose first --
+   confirmed via both an off-screen render and a live `KittenWindow` with
+   `set_mood(IDLE)` before touching any other pose.
+2. **Happy, waiting, deep-sleep (AWAY) faces.** Confirmed live via
+   `set_mood(HAPPY)` and `set_away(True)` (the deep-sleep face is only ever
+   shown paired with the AWAY pose's lying body/drooping ears/curled tail,
+   same as v1.15's own Part 2 -- see that section for why building them
+   together is necessary, not just convenient).
+3. **Interaction poses**: sulking stages 0-3, purr, focused, curious, plus
+   high-five's paw overlay (named explicitly in the spec's Part 3 list).
+   Confirmed live via `set_attention(SULKING, 2)` and `_hovering = True`
+   for purr; focused/curious/high-five confirmed via the off-screen
+   contact sheet (`verify_real_sheet.png`, scratchpad-only, not committed)
+   since none of those needed a dedicated live capture beyond what the
+   contact sheet already showed clearly.
+4. **Small chrome**: every status badge, both streak-star tiers, the
+   crown, and all three seasonal accessories, at their own dedicated 16x16
+   grid scale (see above) rather than the cat's 32x32.
+5. **The mouse sprite.** Its own 16x16 grid, 2-frame breathing cycle, same
+   z-order compositing technique (tail, then ears, then body last) as the
+   cat's own.
+
+**A concrete, deterministic check that the animation is genuinely
+discrete, not just "looks blocky at a glance"**: `pixelart._image_cache`
+was cleared, then a real `paint_kitten(..., mood=IDLE)` was rendered at 200
+different `t` values (`t = 0.0, 0.05, 0.1, ... 9.95`) and the cache size
+checked afterward -- **exactly 2** entries, confirming only the two actual
+idle frame grids were ever rendered, no matter how many distinct timesteps
+were sampled. (An earlier, cruder version of this check instead hashed the
+*full* rendered image at each timestep and got 60 distinct hashes out of
+60 samples -- initially alarming, but it was checking the wrong thing: the
+cat's overall on-screen position still bobs/jitters continuously by design
+(explicitly allowed to stay continuous per the spec's "what does NOT need
+to change" note), so the *composited* image legitimately differs at every
+sub-pixel offset even though only 2 underlying frame grids exist. The
+`_image_cache`-size check above is the correct way to verify frame-level
+discreteness independent of continuous position animation layered on top
+of it -- worth remembering for any future session tempted to reach for a
+whole-image hash instead.)
+
+### Judgment calls, recorded rather than made silently
+
+- **"Curious"'s head-tilt is faked without ever rotating the bitmap.**
+  v1.15 (and v1 before it) rotated the ears+face via `painter.rotate()` for
+  this reaction. Rotating an already nearest-neighbor-scaled pixel image by
+  a few degrees would re-introduce smoothed, non-axis-aligned edges right
+  where the whole point of this round is to avoid exactly that. Instead,
+  the tilt is baked directly into the curious pose's own single frame: one
+  ear taller and shifted, the other lower, an asymmetric head silhouette
+  that reads as "cocked to one side" without any rotation transform at all
+  -- a genuine, standard pixel-art technique for this, not a workaround.
+- **The streak star's "twinkle" changed from a continuous radius pulse to a
+  continuous alpha pulse.** Continuously rescaling a nearest-neighbor pixel
+  image every frame would re-blur its edges on every single frame (scaling
+  a crisp bitmap to a slightly different size doesn't stay crisp unless the
+  scale factor is an exact integer ratio, which a smooth sine sweep never
+  is) -- pulsing brightness instead keeps every rendered frame genuinely
+  hard-edged while still reading as a twinkle, arguably even more so. This
+  is a deliberate technique substitution, not a feature loss: the tier
+  color, the crown at 30+, and the twinkle motion are all still there.
+- **`_draw_zzz` was deliberately left as plain drawn text, not a pixel-grid
+  glyph.** There's no small bitmap font anywhere in this codebase to draw
+  "z" from a grid without inventing one from scratch -- well out of
+  proportion to what three small drifting letters are worth this round.
+  Antialiasing is turned off locally for just this call so it reads at
+  least a little blockier than a fully smoothed font would, without
+  pretending it's genuine pixel art. Recorded here rather than left
+  unmentioned, per this project's own "flag it plainly" standard.
+- **The speech-bubble card and its alarm-clock icon were not touched.**
+  Per the spec's own scope ("the cat/mouse sprite art," not the surrounding
+  UI chrome), and consistent with v1.14's own precedent of drawing the line
+  between the character's own drawing code and the bubble/command-bar/
+  Settings/Dashboard chrome that already went through `theme.py`. Confirmed
+  via diff that `_draw_speech_bubble`, `nudge_bubble_size`, and
+  `_draw_alarm_icon` are byte-for-byte the same logic as before (only their
+  position in the file changed, not their content) -- only the small paw
+  overlay drawn *alongside* the bubble (the nudge wave) changed this round,
+  since that paw is part of the character, not the bubble card.
+
+### Does this genuinely read as authentic pixel art? Yes -- a real technique change, not "smaller and blockier vector shapes"
+
+Per the spec's own explicit aesthetic bar ("note plainly whether the
+result genuinely achieves an authentic pixel-art feel or falls short of
+it"): yes, and for reasons beyond a first glance --
+
+- **Hard edges are structurally guaranteed**, not just visually likely --
+  Part 0's deterministic pixel-exactness check proves nearest-neighbor
+  scaling is actually in effect, not merely that the source art happens to
+  look chunky.
+- **Discrete animation is structurally guaranteed** too -- the
+  `_image_cache`-size check proves exactly 2 frame grids exist for idle
+  across 200 sampled timesteps, not a continuous interpolation that merely
+  *looks* steppy at a glance.
+- **A genuinely small, fixed palette per sprite** (4 colors for the cat,
+  3 for the mouse, 2-3 per small-chrome icon), visibly flat-filled with no
+  gradient or highlight anywhere -- confirmed by reading every literal grid
+  string in `sprite.py` directly, not just eyeballing a render.
+- Both the off-screen contact sheet (`verify_real_sheet.png`) and the live
+  `KittenWindow` captures show every pose clearly distinct from its
+  v1.15 predecessor: a blocky, staircase-edged silhouette instead of a
+  smooth `QPainterPath` curve, visible individual "pixels" at the app's
+  actual on-screen size, and eyes/mouths built from a handful of square
+  cells instead of bezier arcs.
+
+**One honest caveat**, in the same spirit as v1.13's list-scrollbar
+disclosure and v1.15's sulk-stage-3-vs-purr similarity note, not smoothed
+over: sulking stages 0 and 1 are visually very close to each other at the
+app's actual small on-screen size (stage 1's "sliver" of revealed eye is a
+single grid cell, faithfully matching how subtle the original vector
+version's own stage-1 reveal was described as -- "a sliver" -- but a
+single *pixel* reads as even more subtle than a single vector-curve sliver
+did). Not treated as a defect to silently fix by exaggerating the reveal
+beyond what the design calls for; recorded here instead, matching this
+project's own standard for this kind of trade-off.
+
+### `assets/demo.png` regenerated
+
+Same 6-panel composition as before (Happy+Low Battery, 30-Day Streak,
+Birthday, Purring, Sulking, Curious), same 600x480/200x240-per-panel
+layout and label styling, rendered through the real `paint_kitten` off
+-screen on the real `windows` platform plugin (same font-rendering
+precaution as every prior demo.png regeneration). Compared side by side
+against the pre-v1.16 image: every panel now shows a hard-edged, blocky
+silhouette with a handful of flat square colors instead of a smooth
+mascot-style outline -- genuinely, clearly a different rendering
+*technique*, not a palette tweak. `README.md` already references this
+exact filename with no hardcoded dimensions in its text, so no README
+changes were needed.
+
+### Testing
+
+`pytest -q` -> unchanged at **234/234 passed** throughout -- this round is
+pure drawing-code (`sprite.py`'s `QPainter`/pixel-grid rendering plus the
+new `pixelart.py` engine), no pure-logic module touched, the same standard
+`sprite.py` has always been held to (see section 12's Feature 3 for why
+this file has never had a `test_sprite.py` of its own). Part 0's two
+deterministic checks (pixel-exactness, hard-edge sweep) and the
+`_image_cache`-size discreteness check above are the closest thing this
+round has to unit tests for the new engine, run as scratch scripts
+(scratchpad-only, not committed) rather than added to `tests/`, consistent
+with `sprite.py`'s own long-standing exemption. `git status` was checked
+before committing: only `src/gitten/sprite.py` (rewritten),
+`src/gitten/pixelart.py` (new), and `assets/demo.png` (regenerated)
+changed -- `window.py`, `mouse_window.py`, `main.py`,
+`command_bar_window.py`, `settings_window.py`, and `dashboard_window.py`
+were **not** touched, confirmed directly rather than assumed, since
+`paint_kitten`/`paint_mouse`/`CANVAS`/`draw_particles`/`nudge_bubble_size`
+(the only symbols anything outside `sprite.py` actually imports from it)
+all kept their exact pre-v1.16 signatures.
+
+### Files changed this round
+
+`src/gitten/pixelart.py` (new), `src/gitten/sprite.py` (fully rewritten
+internals, same public API), `assets/demo.png` (regenerated). No other
+file in `src/gitten/` changed.
