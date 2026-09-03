@@ -2,42 +2,40 @@
 `paint_mouse` are pure with respect to Qt widget state: give either one a
 painter, a target rect, the relevant mood/pose flags, and a monotonically
 increasing time in seconds, and it draws one animated frame. No external
-art assets or files; everything (including the pixel-art frame data below)
-lives in this module.
+art assets or files; everything lives in this module.
 
-## v1.16 -- a genuine pixel-art redesign (Phase 4)
+## v1.17 -- a bold-outline calico chibi redesign (Phase 5), replacing v1.16
 
-Per `GITTEN_V1_16_SPEC.md`, this round fully replaces v1.15's flat-mascot
-*vector* rendering (smooth `QPainterPath` shapes) with real pixel art:
-every pose is now a small, fixed logical grid (`pixelart.Frame` -- see that
-module for the rendering engine itself, built and verified in isolation
-first per the spec's Part 0) of flat-filled squares, upscaled with
-nearest-neighbor (`Qt.FastTransformation`) scaling for crisp, hard pixel
-edges. Poses that used to breathe/sway/blink via a continuous sine wave now
-do it via a small, fixed set of discrete frames swapped on a timer instead
-(`pixelart.frame_index`) -- a real technique change, not a re-skin, per the
-spec's own framing. What did **not** change: precedence between poses
-(away > sulk > purr > curious > focused > plain mood), *when* each pose is
-shown, or anything that's about the cat's on-screen *position* rather than
-its own drawn frame (the window's drag/walk movement, the particle
-system's drift/fade, bubble entrance/fade timing, a badge's alpha pulse) --
-all of that keeps its exact pre-v1.16 continuous timing, per the spec's own
-"what does NOT need to change" note.
+Per `GITTEN_V1_17_SPEC.md`, this round fully replaces v1.16's pixel-grid
+rendering (`pixelart.py`, now unused and deleted) with smooth
+`QPainterPath` vector shapes again -- closer to v1.15's own *technique* --
+but restyled: a much thicker, bolder uniform outline; flat two-tone
+"calico" patch coloring (a white/cream base plus `theme.ACCENT` as an
+asymmetric patch, not a single solid body color); and a real chibi body
+(a large head, a small simple torso + two paws beneath it) instead of
+either recent redesign's single body-sized silhouette. Continuous smooth
+motion (breathing/swaying/blinking via sine waves driven by `t`) replaces
+v1.16's discrete frame-swapping -- a deliberate reversal back to v1.15's
+own animation model, stated explicitly per the spec's own framing, not a
+silent regression. Every pose's precedence order and animation timing that
+isn't about the character's own drawn shape (away > sulk > purr > curious
+> focused > plain mood; bob/jitter/drift/pulse speeds) is unchanged from
+every prior round.
 
-Every grid below was designed from scratch for this project (a small,
-original chibi-cat/mouse silhouette and an original palette-key grid
-convention) -- inspired by the pixel-art desktop-pet genre broadly, not
-derived from or referencing any specific existing project's sprites,
-palette, or character names, per the spec's explicit originality note.
+An entirely original character, designed from scratch for this project --
+inspired by the general pixel-pet/calico-mascot aesthetic broadly (bold
+outlines, patchy two-tone coloring, chibi proportions, simple dot eyes),
+not copied from or referencing any specific existing character, creator,
+or franchise, per the spec's explicit originality note.
 
-See `DEVELOPMENT_NOTES.md`'s v1.16 entry for the part-by-part build order,
-the Part 0 isolation verification, and the live-screenshot verification for
-each part.
+See `DEVELOPMENT_NOTES.md`'s v1.17 entry for the part-by-part build order
+and the live-screenshot verification for each part.
 """
 
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
@@ -49,30 +47,55 @@ from PySide6.QtGui import (
     QPen,
 )
 
-from gitten import pixelart, theme
+from gitten import theme
 from gitten.mood import Mood
 from gitten.status_badge import Badge
 
-# The cat's own body color *is* theme.ACCENT (not an independent copy of the
-# same hex) -- unchanged from v1.15, still the anchor tying the character
-# itself into the same palette as Settings/Dashboard/command bar/bubbles.
-BODY_COLOR = theme.ACCENT
-# Flat secondary tone for small two-tone pixel details (inner ear, paw pad).
+# -- palette ------------------------------------------------------------
+# The "calico" two-tone scheme: a light base fur color plus theme.ACCENT as
+# an asymmetric patch color, rather than v1.15/v1.16's single solid body
+# tone. `theme.SURFACE_CARD` (plain white) is reused verbatim as the base
+# fur -- theme.py's own audited light surface tone, per the spec's "audit
+# before inventing" instruction, rather than a new one-off hex.
+FUR_COLOR = theme.SURFACE_CARD
+PATCH_COLOR = theme.ACCENT
+# Still used for the nudge-wave/high-five paw pads and the mouse's own
+# ears -- theme.py's "accent lightened toward white" variant, unchanged
+# from v1.15/v1.16's own reuse of it.
 SECONDARY_FILL_COLOR = theme.ACCENT_SOFT
-# The one outline/ink color used throughout every grid below.
+# The one outline/ink color used throughout every shape below.
 OUTLINE_COLOR = theme.TEXT_PRIMARY
 WHITE = theme.SURFACE_CARD
+# Soft blush cheeks reuse the app's existing heart-icon pink (below) at low
+# alpha, rather than inventing a new pink hue family just for this.
+BLUSH_COLOR = QColor("#F06292")
 SHADOW_COLOR = QColor(0, 0, 0, 60)
 ZZZ_COLOR = QColor(120, 120, 128, 220)
 
 CANVAS = 128.0
-CENTER = QPointF(CANVAS / 2, 70.0)
-BODY_RX, BODY_RY = 34.0, 30.0
+# The head's own center -- bob/jitter/drag animate this point, same as
+# every prior round's single "center". Kept a touch higher than v1.15/
+# v1.16's (70) since a real chibi torso now sits below it rather than the
+# head itself occupying the lower half of the canvas.
+CENTER = QPointF(CANVAS / 2, 50.0)
+# The head ellipse's own radii -- kept under the legacy `BODY_RX`/`BODY_RY`
+# names since every overlay (badge/streak/accessory/bubble/paw-wave)
+# already positions itself relative to these, exactly as in every prior
+# round, where the head was always the dominant silhouette these offsets
+# were tuned against.
+BODY_RX, BODY_RY = 34.0, 32.0
 
-# Still used by the speech bubble's border and the alarm-clock icon inside
-# it -- both v1.14-era UI chrome, explicitly out of this round's scope (the
-# spec's own "the cat/mouse sprite art" scope, not the bubble card itself).
-_OUTLINE_PEN_WIDTH = 3.2
+# v1.17: much thicker and bolder than v1.15's 3.2 -- a defining trait of
+# this style, not a subtle bump -- and, per that same round's discipline,
+# held uniform across body/torso/paws/ears/tail rather than varied per
+# element (small chrome -- badges/streak/accessories -- gets its own
+# smaller, still-uniform width below, the same two-tier approach v1.15
+# already established).
+_OUTLINE_PEN_WIDTH = 4.6
+# A visibly thinner pen for fine face detail (whisker marks, the mouth,
+# closed-eye curves) that would be swallowed by the full body/head outline
+# weight at this small a scale.
+_DETAIL_PEN_WIDTH = 2.4
 
 
 def _outline_pen(width: float = _OUTLINE_PEN_WIDTH) -> QPen:
@@ -89,8 +112,7 @@ _NIGHT_BLEND_FACTOR = 0.45
 
 def _blend_color(a: QColor, b: QColor, factor: float) -> QColor:
     """Linear-interpolate two colors; factor 0.0 = a, 1.0 = b. Unchanged
-    from v1.15 -- still how night-mode tints a color, just applied to a
-    palette entry now instead of a vector fill."""
+    from v1.15/v1.16 -- still how night-mode tints a color."""
     return QColor(
         round(a.red() + (b.red() - a.red()) * factor),
         round(a.green() + (b.green() - a.green()) * factor),
@@ -98,663 +120,28 @@ def _blend_color(a: QColor, b: QColor, factor: float) -> QColor:
     )
 
 
-# -- the cat's pixel-art palette --------------------------------------------
-# Four colors total (outline, body, a secondary tone for inner-ear/paw
-# details, and eye-white) -- within the spec's "roughly 4-6 colors" budget.
-# Night-mode swaps only the body entry, the same single value `_blend_color`
-# has always adjusted.
-
-_CAT_PALETTE_BASE: pixelart.Palette = {
-    "O": OUTLINE_COLOR.name(),
-    "B": BODY_COLOR.name(),
-    "C": SECONDARY_FILL_COLOR.name(),
-    "W": WHITE.name(),
-}
+def _fur_color(night: bool) -> QColor:
+    return _blend_color(FUR_COLOR, _MOONLIT_BASE, _NIGHT_BLEND_FACTOR) if night else FUR_COLOR
 
 
-def _cat_palette(night: bool) -> pixelart.Palette:
-    if not night:
-        return _CAT_PALETTE_BASE
-    blended = _blend_color(BODY_COLOR, _MOONLIT_BASE, _NIGHT_BLEND_FACTOR)
-    return {**_CAT_PALETTE_BASE, "B": blended.name()}
+def _patch_color(night: bool) -> QColor:
+    return _blend_color(PATCH_COLOR, _MOONLIT_BASE, _NIGHT_BLEND_FACTOR) if night else PATCH_COLOR
 
 
-# -- cat pixel-art frames ----------------------------------------------------
-# A 32x32 logical grid (per the spec's own suggestion) holding the *whole*
-# character (body+ears+tail+face) per frame -- composed by hand at design
-# time in the same back-to-front order the old vector code drew in (tail,
-# then ears, then the body last so it covers both roots, then the face on
-# top), so a body silhouette drawn last still reads as "ears growing out of
-# the head" and "a tail rooted at the flank" exactly like before, just as
-# flat-filled squares instead of smooth paths.
-
-_F_idle_0 = (
-    "................................",
-    "................................",
-    ".........OO..........OO.........",
-    ".........OO..........OO.........",
-    "........OCCO........OCCO........",
-    "........OCCO........OCCO........",
-    ".......OCCCCO......OCCCCO.......",
-    ".......OCCCCO......OCCCCO.......",
-    "......OCCCCCCO....OCCCCCCO......",
-    ".....OOCCCCCCOO.OOOCCCCCCOO.....",
-    ".....OOOOOOOOOOOBOOOOOOOOOO.....",
-    ".........OOBBBBBBBBBBBOO....OOO.",
-    "........OOBBBBBBBBBBBBBOO..OOBOO",
-    ".......OBBBBBBBBBBBBBBBBBO.OBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    ".....OBBBBBOOOBBBBBOOOBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBOOOBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBOO",
-    "........OOBBBBBBBBBBBBBOOBBBBOO.",
-    ".........OOBBBBBBBBBBBOO.OOOO...",
-    "...........OOOOOBOOOOO..........",
-    "................O...............",
-    "................................",
-    "................................",
-)
-_F_idle_1 = (
-    "................................",
-    "................................",
-    ".........OO..........OO.........",
-    ".........OO..........OO.........",
-    "........OCCO........OCCO........",
-    "........OCCO........OCCO........",
-    ".......OCCCCO......OCCCCO.......",
-    ".......OCCCCO......OCCCCO.......",
-    "......OCCCCCCO..O.OCCCCCCO......",
-    ".....OOCCCCOOOOOBOOOOOCCCOO...OO",
-    ".....OOOOOOBBBBBBBBBBBOOOOO..OOB",
-    "........OOBBBBBBBBBBBBBOO....OBB",
-    ".......OBBBBBBBBBBBBBBBBBO...OBB",
-    "......OBBBBBBBBBBBBBBBBBBBO..OBB",
-    "......OBBBBBBBBBBBBBBBBBBBO..OBB",
-    ".....OBBBBBBBBBBBBBBBBBBBBBO.OBB",
-    ".....OBBBBBBOBBBBBBBOBBBBBBOOBBB",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOOBBB",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBB",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOOBBB",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOOBBB",
-    ".....OBBBBBBBBBOOOBBBBBBBBBOBBBB",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBB",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBB",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBBO",
-    "........OOBBBBBBBBBBBBBOOBBBBBBO",
-    ".........OOBBBBBBBBBBBOOBBBBBBOO",
-    "...........OOOOOBOOOOO..OBBBBOO.",
-    "................O........OOOO...",
-    "................................",
-    "................................",
-    "................................",
-)
-_IDLE_FRAMES: tuple[pixelart.Frame, ...] = (_F_idle_0, _F_idle_1)
-_IDLE_FRAME_SECONDS = 1.4
-
-_F_happy_0 = (
-    "................................",
-    "................................",
-    ".........OO..........OO.........",
-    ".........OO..........OO.........",
-    "........OCCO........OCCO........",
-    "........OCCO........OCCO........",
-    ".......OCCCCO......OCCCCO.......",
-    ".......OCCCCO......OCCCCO.......",
-    "......OCCCCCCO....OCCCCCCO......",
-    ".....OOCCCCCCOO.OOOCCCCCCOO.....",
-    ".....OOOOOOOOOOOBOOOOOOOOOO.....",
-    ".........OOBBBBBBBBBBBOO....OOO.",
-    "........OOBBBBBBBBBBBBBOO..OOBOO",
-    ".......OBBBBBBBBBBBBBBBBBO.OBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    "......OBBBBBOBBBBBBBOBBBBBOOBBBO",
-    ".....OBBBBBOBOBBBBBOBOBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBOBBBOBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBOBOBBBBBBBBBOBBBO",
-    "......OBBBBBBBBBOBBBBBBBBBOBBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBOO",
-    "........OOBBBBBBBBBBBBBOOBBBBOO.",
-    ".........OOBBBBBBBBBBBOO.OOOO...",
-    "...........OOOOOBOOOOO..........",
-    "................O...............",
-    "................................",
-    "................................",
-)
-_F_happy_1 = (
-    "................................",
-    "................................",
-    ".........OO..........OO.........",
-    ".........OO..........OO.........",
-    "........OCCO........OCCO........",
-    "........OCCO........OCCO........",
-    ".......OCCCCO......OCCCCO.......",
-    ".......OCCCCO......OCCCCO.......",
-    "......OCCCCCCO..O.OCCCCCCO......",
-    ".....OOCCCCOOOOOBOOOOOCCCOO...OO",
-    ".....OOOOOOBBBBBBBBBBBOOOOO..OOB",
-    "........OOBBBBBBBBBBBBBOO....OBB",
-    ".......OBBBBBBBBBBBBBBBBBO...OBB",
-    "......OBBBBBBBBBBBBBBBBBBBO..OBB",
-    "......OBBBBBBBBBBBBBBBBBBBO..OBB",
-    ".....OBBBBBBOBBBBBBBOBBBBBBO.OBB",
-    ".....OBBBBBOBOBBBBBOBOBBBBBOOBBB",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOOBBB",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBB",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOOBBB",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOOBBB",
-    ".....OBBBBBBBBOBBBOBBBBBBBBOBBBB",
-    "......OBBBBBBBBOBOBBBBBBBBOBBBBB",
-    "......OBBBBBBBBBOBBBBBBBBBOBBBBB",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBBO",
-    "........OOBBBBBBBBBBBBBOOBBBBBBO",
-    ".........OOBBBBBBBBBBBOOBBBBBBOO",
-    "...........OOOOOBOOOOO..OBBBBOO.",
-    "................O........OOOO...",
-    "................................",
-    "................................",
-    "................................",
-)
-_HAPPY_FRAMES: tuple[pixelart.Frame, ...] = (_F_happy_0, _F_happy_1)
-_HAPPY_FRAME_SECONDS = 1.4
-
-_F_waiting_0 = (
-    "................................",
-    "................................",
-    ".........OO..........OO.........",
-    ".........OO..........OO.........",
-    "........OCCO........OCCO........",
-    "........OCCO........OCCO........",
-    ".......OCCCCO......OCCCCO.......",
-    ".......OCCCCO......OCCCCO.......",
-    "......OCCCCCCO....OCCCCCCO......",
-    ".....OOCCCCCCOO.OOOCCCCCCOO.....",
-    ".....OOOOOOOOOOOBOOOOOOOOOO.....",
-    ".........OOBBBBBBBBBBBOO....OOO.",
-    "........OOBBBBBBBBBBBBBOO..OOBOO",
-    ".......OBBBBOBBBBBOBBBBBBO.OBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    "......OBBBBOWWBBBBBOWWBBBBOOBBBO",
-    ".....OBBBBBOWWBBBBBOWWBBBBBOBBBO",
-    ".....OBBBBBWWOBBBBBWWOBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBO",
-    ".....OBBBBBBBBBOBOBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBOBOBOBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBOO",
-    "........OOBBBBBBBBBBBBBOOBBBBOO.",
-    ".........OOBBBBBBBBBBBOO.OOOO...",
-    "...........OOOOOBOOOOO..........",
-    "................O...............",
-    "................................",
-    "................................",
-)
-_F_waiting_1 = (
-    "................................",
-    "................................",
-    ".........OO..........OO.........",
-    ".........OO..........OO.........",
-    "........OCCO........OCCO........",
-    "........OCCO........OCCO........",
-    ".......OCCCCO......OCCCCO.......",
-    ".......OCCCCO......OCCCCO.......",
-    "......OCCCCCCO....OCCCCCCO......",
-    ".....OOCCCCCCOO.OOOCCCCCCOO.....",
-    ".....OOOOOOOOOOOBOOOOOOOOOO.....",
-    ".........OOBBBBBBBBBBBOO....OOO.",
-    "........OOBBBBBBBBBBBBBOO..OOBOO",
-    ".......OBBBBOBBBBBOBBBBBBO.OBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    "......OBBBBOWWBBBBBOWWBBBBOOBBBO",
-    ".....OBBBBBWWOBBBBBWWOBBBBBOBBBO",
-    ".....OBBBBBWWOBBBBBWWOBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBO",
-    ".....OBBBBBBBBBOBOBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBOBOBOBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBOO",
-    "........OOBBBBBBBBBBBBBOOBBBBOO.",
-    ".........OOBBBBBBBBBBBOO.OOOO...",
-    "...........OOOOOBOOOOO..........",
-    "................O...............",
-    "................................",
-    "................................",
-)
-_WAITING_FRAMES: tuple[pixelart.Frame, ...] = (_F_waiting_0, _F_waiting_1)
-# A brisker cadence than idle's slow breathing -- reads as the nervous
-# side-to-side glance the old continuous sine used to animate, now as a
-# discrete 2-frame swap between the pupils' left/right position.
-_WAITING_FRAME_SECONDS = 0.6
-
-_F_away_0 = (
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "......OO................OO......",
-    "......CCO..............OCC......",
-    ".....OCCO..............OCCO.....",
-    "....OCCCCO......O.....OCCCCO....",
-    "....OCCCOOOOOOOOBOOOOOOOCCCO....",
-    "...OOOOOOOBBBBBBBBBBBBBOOOOOO...",
-    "......OOBBOOOOOBBBOOOOOBBOO.....",
-    ".....OBBBBBBBBBBBBBBBBBBBBBO....",
-    "....OBBBBBBBBBBBBBBBBBBBBOOBOO..",
-    "....OBBBBBBBBBBBBBBBBBBBBOBBBO..",
-    "...OBBBBBBBBBBBBBBBBBBBBBBBBBB..",
-    "....OBBBBBBBBBBBOBBBOBOBBOBBBO..",
-    "....OBBBBBBBBBBBBBBBBBBOOOBBBO..",
-    ".....OBBBBBBBBBBBBBBOBBBBBBBBO..",
-    "......OOBBBBBBBBBBBBOBBBBBBBBO..",
-    ".......OOOBBBBBBBBBBBOBBBBBBBO..",
-    "..........OOOOOOBOOOOOOOBBBBO...",
-    "................O......OOOOO....",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-)
-_AWAY_FRAMES: tuple[pixelart.Frame, ...] = (_F_away_0,)
-_AWAY_FRAME_SECONDS = 3.0
-
-_F_sulk0_0 = (
-    "................................",
-    "................................",
-    ".........OO..........OO.........",
-    ".........OO..........OO.........",
-    "........OCCO........OCCO........",
-    "........OCCO........OCCO........",
-    ".......OCCCCO......OCCCCO.......",
-    ".......OCCCCO......OCCCCO.......",
-    "......OCCCCCCO....OCCCCCCO......",
-    ".....OOCCCCCCOO.OOOCCCCCCOO.....",
-    ".....OOOOOOOOOOOBOOOOOOOOOO.....",
-    ".........OOBBBBBBBBBBBOO....OOO.",
-    "........OOBBBBBBBBBBBBBOO..OOBOO",
-    ".......OBBBBBBBBOBBBBBBBBO.OBBBO",
-    "......OBBBBBBBBBOBBBBBBBBBOOBBBO",
-    "......OBBBBBBBBBOBBBBBBBBBOOBBBO",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBO",
-    "....OBBBBBBBBBBBOBBBBBBBBBBBOBBO",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBOO",
-    "........OOBBBBBBBBBBBBBOOBBBBOO.",
-    ".........OOBBBBBBBBBBBOO.OOOO...",
-    "...........OOOOOBOOOOO..........",
-    "................O...............",
-    "................................",
-    "................................",
-)
-_F_sulk1_0 = (
-    "................................",
-    "................................",
-    ".........OO..........OO.........",
-    ".........OO..........OO.........",
-    "........OCCO........OCCO........",
-    "........OCCO........OCCO........",
-    ".......OCCCCO......OCCCCO.......",
-    ".......OCCCCO......OCCCCO.......",
-    "......OCCCCCCO....OCCCCCCO......",
-    ".....OOCCCCCCOO.OOOCCCCCCOO.....",
-    ".....OOOOOOOOOOOBOOOOOOOOOO.....",
-    ".........OOBBBBBBBBBBBOO....OOO.",
-    "........OOBBBBBBBBBBBBBOO..OOBOO",
-    ".......OBBBBBBBBOBBBBBBBBO.OBBBO",
-    "......OBBBBBBBBBOBBBBBBBBBOOBBBO",
-    "......OBBBBBBBBBOBBBBBBBBBOOBBBO",
-    ".....OBBBBBBBBBBOBBOOOBBBBBOBBBO",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBO",
-    "....OBBBBBBBBBBBOBBBBBBBBBBBOBBO",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBOO",
-    "........OOBBBBBBBBBBBBBOOBBBBOO.",
-    ".........OOBBBBBBBBBBBOO.OOOO...",
-    "...........OOOOOBOOOOO..........",
-    "................O...............",
-    "................................",
-    "................................",
-)
-_F_sulk2_0 = (
-    "................................",
-    "................................",
-    ".........OO..........OO.........",
-    ".........OO..........OO.........",
-    "........OCCO........OCCO........",
-    "........OCCO........OCCO........",
-    ".......OCCCCO......OCCCCO.......",
-    ".......OCCCCO......OCCCCO.......",
-    "......OCCCCCCO....OCCCCCCO......",
-    ".....OOCCCCCCOO.OOOCCCCCCOO.....",
-    ".....OOOOOOOOOOOBOOOOOOOOOO.....",
-    ".........OOBBBBBBBBBBBOO....OOO.",
-    "........OOBBBBBBBBBBBBBOO..OOBOO",
-    ".......OBBBBBBBBBBBBBBBBBO.OBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    ".....OBBBBOOOOOBBBOOOOOBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBOO",
-    "........OOBBBBBBBBBBBBBOOBBBBOO.",
-    ".........OOBBBBBBBBBBBOO.OOOO...",
-    "...........OOOOOBOOOOO..........",
-    "................O...............",
-    "................................",
-    "................................",
-)
-_F_sulk3_0 = (
-    "................................",
-    "................................",
-    ".........OO..........OO.........",
-    ".........OO..........OO.........",
-    "........OCCO........OCCO........",
-    "........OCCO........OCCO........",
-    ".......OCCCCO......OCCCCO.......",
-    ".......OCCCCO......OCCCCO.......",
-    "......OCCCCCCO....OCCCCCCO......",
-    ".....OOCCCCCCOO.OOOCCCCCCOO.....",
-    ".....OOOOOOOOOOOBOOOOOOOOOO.....",
-    ".........OOBBBBBBBBBBBOO....OOO.",
-    "........OOBBBBBBBBBBBBBOO..OOBOO",
-    ".......OBBBBBBBBBBBBBBBBBO.OBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    ".....OBBBBOOOOOBBBOOOOOBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBOOOBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBOO",
-    "........OOBBBBBBBBBBBBBOOBBBBOO.",
-    ".........OOBBBBBBBBBBBOO.OOOO...",
-    "...........OOOOOBOOOOO..........",
-    "................O...............",
-    "................................",
-    "................................",
-)
-# Sulking/reconciliation stages 0-3 -- "fully reconciled" (the old code's
-# stage 4) is just the plain front-facing IDLE frames above, handled by the
-# caller falling through to them once `turn_stage` goes back to `None`.
-_SULK_FRAMES: dict[int, tuple[pixelart.Frame, ...]] = {
-    0: (_F_sulk0_0,),
-    1: (_F_sulk1_0,),
-    2: (_F_sulk2_0,),
-    3: (_F_sulk3_0,),
-}
-
-_F_purr_0 = (
-    "................................",
-    "................................",
-    ".........OO..........OO.........",
-    ".........OO..........OO.........",
-    "........OCCO........OCCO........",
-    "........OCCO........OCCO........",
-    ".......OCCCCO......OCCCCO.......",
-    ".......OCCCCO......OCCCCO.......",
-    "......OCCCCCCO....OCCCCCCO......",
-    ".....OOCCCCCCOO.OOOCCCCCCOO.....",
-    ".....OOOOOOOOOOOBOOOOOOOOOO.....",
-    ".........OOBBBBBBBBBBBOO....OOO.",
-    "........OOBBBBBBBBBBBBBOO..OOBOO",
-    ".......OBBBBBBBBBBBBBBBBBO.OBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    ".....OBBBBBOOOBBBBBOOOBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBOBOBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBOO",
-    "........OOBBBBBBBBBBBBBOOBBBBOO.",
-    ".........OOBBBBBBBBBBBOO.OOOO...",
-    "...........OOOOOBOOOOO..........",
-    "................O...............",
-    "................................",
-    "................................",
-)
-_F_purr_1 = (
-    "................................",
-    "................................",
-    ".........OO..........OO.........",
-    ".........OO..........OO.........",
-    "........OCCO........OCCO........",
-    "........OCCO........OCCO........",
-    ".......OCCCCO......OCCCCO.......",
-    ".......OCCCCO......OCCCCO.......",
-    "......OCCCCCCO....OCCCCCCO......",
-    ".....OOCCCCCCOO.OOOCCCCCCOO...OO",
-    ".....OOOOOOOOOOOBOOOOOOOOOO..OOB",
-    ".........OOBBBBBBBBBBBOO.....OBB",
-    "........OOBBBBBBBBBBBBBOO....OBB",
-    ".......OBBBBBBBBBBBBBBBBBO...OBB",
-    "......OBBBBBBBBBBBBBBBBBBBO..OBB",
-    "......OBBBBBBBBBBBBBBBBBBBO..OBB",
-    ".....OBBBBBOOOBBBBBOOOBBBBBOOBBB",
-    ".....OBBBBBBOBBBBBBBOBBBBBBOOBBB",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOOBBB",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBB",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOOBBB",
-    ".....OBBBBBBBBBOBOBBBBBBBBBOBBBB",
-    ".....OBBBBBBBBBBOBBBBBBBBBBOBBBB",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBB",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBBO",
-    "........OOBBBBBBBBBBBBBOOBBBBBOO",
-    ".........OOBBBBBBBBBBBOOOBBBBOO.",
-    "...........OOOOOBOOOOO...OOOO...",
-    "................O...............",
-    "................................",
-    "................................",
-)
-_PURR_FRAMES: tuple[pixelart.Frame, ...] = (_F_purr_0, _F_purr_1)
-_PURR_FRAME_SECONDS = 0.45
-
-_F_focused_0 = (
-    "................................",
-    "..........OO........OO..........",
-    ".........OCO........OCO.........",
-    ".........OCC........CCO.........",
-    "........OCCCO......OCCCO........",
-    "........OCCCO......OCCCO........",
-    ".......OCCCCCO....OCCCCCO.......",
-    "......OOCCCCCO....OCCCCCOO......",
-    "......OCCCCCCO....OCCCCCCO......",
-    ".....OOOOOOOOOO.OOOOOOOOOOO.....",
-    "...........OOOOOBOOOOO..........",
-    ".........OOBBBBBBBBBBBOO....OOO.",
-    "........OOBBBBBBBBBBBBBOO..OOBOO",
-    ".......OBBBBBBBBBBBBBBBBBO.OBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    "......OBBBBWWWBBBBBWWWBBBBOOBBBO",
-    ".....OBBBBBWOWBBBBBWOWBBBBBOBBBO",
-    ".....OBBBBBWWWBBBBBWWWBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBOOOBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBOO",
-    "........OOBBBBBBBBBBBBBOOBBBBOO.",
-    ".........OOBBBBBBBBBBBOO.OOOO...",
-    "...........OOOOOBOOOOO..........",
-    "................O...............",
-    "................................",
-    "................................",
-)
-_F_focused_1 = (
-    "................................",
-    "..........OO........OO..........",
-    ".........OCO........OCO.........",
-    ".........OCC........CCO.........",
-    "........OCCCO......OCCCO........",
-    "........OCCCO......OCCCO........",
-    ".......OCCCCCO....OCCCCCO.......",
-    "......OOCCCCCO....OCCCCCOO......",
-    "......OCCCCCCO....OCCCCCCO......",
-    ".....OOOOOOOOOO.OOOOOOOOOOO.....",
-    "...........OOOOOBOOOOO..........",
-    ".........OOBBBBBBBBBBBOO....OOO.",
-    "........OOBBBBBBBBBBBBBOO..OOBOO",
-    ".......OBBBBBBBBBBBBBBBBBO.OBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    "......OBBBBWOWBBBBBWOWBBBBOOBBBO",
-    ".....OBBBBBOOOBBBBBOOOBBBBBOBBBO",
-    ".....OBBBBBWOWBBBBBWOWBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBOOOBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBOO",
-    "........OOBBBBBBBBBBBBBOOBBBBOO.",
-    ".........OOBBBBBBBBBBBOO.OOOO...",
-    "...........OOOOOBOOOOO..........",
-    "................O...............",
-    "................................",
-    "................................",
-)
-_FOCUSED_FRAMES: tuple[pixelart.Frame, ...] = (_F_focused_0, _F_focused_1)
-_FOCUSED_FRAME_SECONDS = 0.9
-
-_F_curious_0 = (
-    "................................",
-    "........OO......................",
-    "........CC......................",
-    ".......OCCO...........OO........",
-    ".......OCCO...........CC........",
-    "......OCCCCO.........OCCO.......",
-    "......OCCCCO.........OCCO.......",
-    ".....OCCCCCCO.......OCCCCO......",
-    ".....OCCCCCCO......OOCCCCOO.....",
-    "....OOOOOOOOOO..O..OCCCCCCO.....",
-    "...........OOOOOBOOOOOOOOOOO....",
-    ".........OOBBBBBBBBBBBOO....OOO.",
-    "........OOBBBBBBBBBBBBBOO..OOBOO",
-    ".......OBBBBBBBBBBBBBBBBBO.OBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOOBBBO",
-    "......OBBBBOWOBBBBBOWOBBBBOOBBBO",
-    ".....OBBBBBWWOBBBBBWWOBBBBBOBBBO",
-    ".....OBBBBBOWOBBBBBOWOBBBBBOBBBO",
-    ".....OBBBBBBBBBBBBBBBBBBBBBOBBBO",
-    "....OBBBBBBBBBBBBBBBBBBBBBBBOBBO",
-    ".....OBBBBBBBBBBOOBBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBOWWOBBBBBBBBOBBBO",
-    ".....OBBBBBBBBBOWWOBBBBBBBBOBBBO",
-    "......OBBBBBBBBBOOBBBBBBBBOBBBBO",
-    "......OBBBBBBBBBBBBBBBBBBBOBBBBO",
-    ".......OBBBBBBBBBBBBBBBBBOBBBBOO",
-    "........OOBBBBBBBBBBBBBOOBBBBOO.",
-    ".........OOBBBBBBBBBBBOO.OOOO...",
-    "...........OOOOOBOOOOO..........",
-    "................O...............",
-    "................................",
-    "................................",
-)
-_CURIOUS_FRAMES: tuple[pixelart.Frame, ...] = (_F_curious_0,)
-# v1.15's curious pose rotated the head via `painter.rotate` -- rotating a
-# nearest-neighbor pixel image by a few degrees would re-smooth its edges
-# and defeat the whole point of this round, so instead the tilt is baked
-# directly into this one frame's own asymmetric ear/head placement (one ear
-# taller and shifted, the other lower) -- a genuine pixel-art technique for
-# suggesting a tilt without ever rotating the bitmap itself.
-_CURIOUS_FRAME_SECONDS = 1.0
-
-_CAT_GRID_SIZE = 32
-# Canvas units per logical pixel, and which grid cell (col, row) lands
-# exactly on `center` -- both fixed constants shared by every pose above,
-# since every frame was authored into the same absolute 32x32 coordinate
-# space regardless of where that particular pose's body sits within it.
-_CAT_GRID_PX = 3.4
-_CAT_ANCHOR_COL = 16.0
-_CAT_ANCHOR_ROW = 19.0
-
-
-def _cat_sprite_rect(center: QPointF) -> QRectF:
-    size = _CAT_GRID_SIZE * _CAT_GRID_PX
-    x = center.x() - _CAT_ANCHOR_COL * _CAT_GRID_PX
-    y = center.y() - _CAT_ANCHOR_ROW * _CAT_GRID_PX
-    return QRectF(x, y, size, size)
-
-
-def _select_cat_frames(
-    show_away: bool,
-    turn_stage: int | None,
-    show_purr: bool,
-    show_curious: bool,
-    show_focused: bool,
-    mood: Mood,
-) -> tuple[tuple[pixelart.Frame, ...], float]:
-    """The same precedence order `paint_kitten` has always used (away >
-    sulk > purr > curious > focused > plain mood), just picking a frame set
-    + discrete-animation timing instead of a set of continuous draw calls."""
-    if show_away:
-        return _AWAY_FRAMES, _AWAY_FRAME_SECONDS
-    if turn_stage is not None:
-        return _SULK_FRAMES[turn_stage], _IDLE_FRAME_SECONDS
-    if show_purr:
-        return _PURR_FRAMES, _PURR_FRAME_SECONDS
-    if show_curious:
-        return _CURIOUS_FRAMES, _CURIOUS_FRAME_SECONDS
-    if show_focused:
-        return _FOCUSED_FRAMES, _FOCUSED_FRAME_SECONDS
-    if mood == Mood.HAPPY:
-        return _HAPPY_FRAMES, _HAPPY_FRAME_SECONDS
-    if mood == Mood.WAITING:
-        return _WAITING_FRAMES, _WAITING_FRAME_SECONDS
-    return _IDLE_FRAMES, _IDLE_FRAME_SECONDS
+# -- chibi torso + paw layout -------------------------------------------
+# A small, simple body beneath the head -- chibi proportions, not a return
+# to v1's more evenly-proportioned body. Two layouts: the normal sitting
+# posture, and a lower/flatter/tucked-in one for the AWAY deep-sleep pose
+# (see `_draw_torso`/`_draw_paws` below) -- leaning into the pose's
+# curled-up chibi quality rather than just swapping the face.
+TORSO_RX, TORSO_RY = 20.0, 16.0
+TORSO_OFFSET_Y = 42.0
+TORSO_OFFSET_Y_AWAY = 28.0
+TORSO_RX_AWAY = 25.0
+TORSO_RY_AWAY = 12.0
+PAW_RX, PAW_RY = 8.0, 6.5
+PAW_DX = 13.0
+PAW_DX_AWAY = 10.0
 
 
 def paint_kitten(
@@ -787,51 +174,27 @@ def paint_kitten(
     painter.scale(scale, scale)
     painter.translate(-CANVAS / 2, -CANVAS / 2)
 
-    # Normally rect.width() == rect.height() == the fixed window size, and
-    # this equals CANVAS/2 exactly. But window.py temporarily widens the
-    # physical window (keeping height fixed, so `scale` above -- and every
-    # other proportion in this whole function -- stays unchanged) to fit a
-    # nudge bubble too wide for the plain canvas; this is how much
-    # canvas-unit half-width is actually available to draw into for this
-    # particular call, used only by the nudge bubble's own clamping below.
+    # Normally rect.width() == rect.height() == the fixed window size. But
+    # window.py temporarily widens the physical window (height fixed, so
+    # `scale` above stays unchanged) to fit a nudge bubble too wide for the
+    # plain canvas; this is how much canvas-unit half-width is actually
+    # available to draw into, used only by the nudge bubble's own clamping.
     canvas_half_width = rect.width() / (2 * scale)
 
     # `bob` (a gentle vertical float) and `jitter_x` (the WAITING mood's
-    # nervous shiver) are animations of the cat's *position*, not its own
-    # drawn frame -- explicitly the kind of thing v1.16 leaves as continuous
-    # timing, unchanged from every prior round (see this module's docstring
-    # and GITTEN_V1_16_SPEC.md's "what does NOT need to change" note).
+    # nervous shiver) animate the cat's *position*, continuously, exactly
+    # as every prior round -- unchanged by this round's drawing-technique
+    # swap.
     bob = 1.5 * math.sin(t * 2.0) if not dragging else 0.0
     jitter_x = 0.6 * math.sin(t * 14.0) if mood == Mood.WAITING and not away else 0.0
     center = QPointF(CENTER.x() + jitter_x, CENTER.y() + bob)
+    breathe = 1.0 + 0.02 * math.sin(t * 2.0)
+    away_breathe = 1.0 + 0.05 * math.sin(t * 0.7)
+    tail_phase = math.sin(t * 1.6) * 0.5 + math.sin(t * 0.7) * 0.2
 
-    # "Purring" (mouse hovering), "curious" (a new program was just
-    # launched -- v1.6), and "focused" (a test/build process running) are
-    # all standalone reactions layered independently of git mood. Sulking
-    # still wins over all three -- a cat mid-sulk doesn't warm up just
-    # because the cursor is over it, something new opened, or a test
-    # happens to be running. Among the three: a live hover is the most
-    # immediate, direct signal (a hand on the cat right now), so it wins
-    # over both of the other two, matching the existing hover-vs-focused
-    # precedent from v1.5. Between curious and focused specifically: noticing
-    # a brand new program appear is a discrete, momentary event (it
-    # self-clears after ~2s, see window.py), while focused is a passive,
-    # potentially long-running "something is happening in the background"
-    # state -- a fresh, surprising thing happening right now reads as more
-    # attention-grabbing than continuing to watch an already-running test,
-    # so curious wins over focused whenever both are true at once. Verified
-    # concretely (not just reasoned about) via a pixel-diff in this
-    # feature's own dev-notes section: curious+focused renders identically
-    # to curious-alone, and differs from focused-alone. (`view_mode == "pet"`
-    # isn't threaded through as its own parameter here -- `window.py`'s
-    # `paintEvent` already returns early without calling `paint_kitten` at
-    # all while the inbox view is showing, so it's already guaranteed true
-    # by the time this function runs.)
-    #
-    # v1.8: AWAY (real system-wide keyboard/mouse idle, distinct from the
-    # git-driven IDLE mood) sits above *all* of the above, as a full
-    # override rather than another layer -- the whole point of this state
-    # is "nobody is here to see any of this," so it always wins.
+    # Same standalone-reaction precedence every round has used: away wins
+    # over everything; sulking wins over purr/curious/focused; a live hover
+    # wins over curious/focused; a fresh app launch wins over focused.
     show_away = away
     show_purr = hovering and turn_stage is None and not show_away
     show_curious = curious and turn_stage is None and not show_purr and not show_away
@@ -843,25 +206,46 @@ def paint_kitten(
         and not show_away
     )
 
-    _draw_shadow(painter, center)
+    _draw_shadow(painter, center, show_away)
 
-    frames, frame_seconds = _select_cat_frames(
-        show_away, turn_stage, show_purr, show_curious, show_focused, mood
-    )
-    frame = frames[pixelart.frame_index(t, len(frames), frame_seconds)]
-    image = pixelart.render_frame(frame, _cat_palette(night))
-    pixelart.draw_pixel_image(painter, image, _cat_sprite_rect(center))
+    if not show_away:
+        _draw_tail(painter, center, tail_phase, night=night)
+
+    _draw_torso(painter, center, away_breathe if show_away else breathe, night=night, lying=show_away)
+    _draw_paws(painter, center, show_away)
+
+    if show_away:
+        _draw_tail(painter, center, tail_phase, curled=True, night=night)
+        _draw_ears(painter, center, breathe, drooping=True, t=t, night=night)
+        _draw_head(painter, center, night=night)
+        _draw_sleep_face(painter, center, t)
+    elif show_curious:
+        with _head_tilt(painter, center, _CURIOSITY_TILT_DEGREES):
+            _draw_ears(painter, center, breathe, perked=True, t=t, night=night)
+            _draw_head(painter, center, night=night)
+            _draw_face_details(painter, center)
+            _draw_curious_face(painter, center, t)
+    else:
+        _draw_ears(painter, center, breathe, perked=show_focused, wiggle=show_purr, t=t, night=night)
+        _draw_head(painter, center, night=night)
+        if turn_stage is not None:
+            _draw_face_turned(painter, center, turn_stage, t)
+        else:
+            _draw_face_details(painter, center)
+            if show_purr:
+                _draw_purr_face(painter, center, t)
+            elif show_focused:
+                _draw_focused_face(painter, center, t)
+            else:
+                _draw_face(painter, center, mood, t)
+                urgent = badge in (Badge.LOW_BATTERY, Badge.CRITICAL_BATTERY)
+                _draw_mood_overlay(painter, center, mood, t, urgent=urgent)
 
     if show_away:
         # A bigger, slower-drifting "zzz" than the regular IDLE mood
         # overlay -- reused (not reinvented) via the `deep` flag, played
         # unconditionally regardless of the git-driven mood underneath.
         _draw_zzz(painter, center, t, deep=True)
-    elif turn_stage is None and not show_purr and not show_curious and not show_focused:
-        # The plain "just showing mood" case -- the only one that also
-        # shows a mood overlay (zzz/heart/exclaim), exactly as before.
-        urgent = badge in (Badge.LOW_BATTERY, Badge.CRITICAL_BATTERY)
-        _draw_mood_overlay(painter, center, mood, t, urgent=urgent)
 
     if accessory is not None:
         _draw_accessory(painter, center, accessory, t)
@@ -886,259 +270,502 @@ def paint_kitten(
         )
 
     # The high-five doesn't change the face/mood at all -- it's purely an
-    # additive raised-paw overlay, drawn last (on top of everything else),
-    # so it never has to compete with sulking/purr/focused precedence.
+    # additive raised-paw overlay, drawn last (on top of everything else).
     if high_five:
         _draw_high_five_paw(painter, center, t)
 
     painter.restore()
 
 
-def _draw_shadow(painter: QPainter, center: QPointF) -> None:
+def _draw_shadow(painter: QPainter, center: QPointF, away: bool) -> None:
     painter.save()
     painter.setPen(Qt.NoPen)
     painter.setBrush(SHADOW_COLOR)
-    shadow_rect = QRectF(0, 0, BODY_RX * 2.1, 10.0)
-    shadow_rect.moveCenter(QPointF(center.x(), center.y() + BODY_RY + 8))
+    offset_y = TORSO_OFFSET_Y_AWAY if away else TORSO_OFFSET_Y
+    rx = (TORSO_RX_AWAY if away else TORSO_RX) * 1.6
+    shadow_rect = QRectF(0, 0, rx * 2, 9.0)
+    shadow_rect.moveCenter(QPointF(center.x(), center.y() + offset_y + 14))
     painter.drawEllipse(shadow_rect)
     painter.restore()
 
 
-# -- small chrome: badges, streak icons, seasonal accessories, mood-overlay
-# icons, and the paw overlays ------------------------------------------------
-# A smaller 16x16 grid -- literally reusing the cat's own 32x32-grid scale
-# for a ~12-canvas-unit icon would either vanish into 1-2px slivers or force
-# a huge outline; a dedicated smaller grid keeps these legible, the same
-# "these can't take the main character's own proportions literally" lesson
-# v1.15's own Part 4 already learned for its outline width, applied here to
-# grid resolution instead. `F` is a *dynamic* "state fill" character,
-# resolved to an actual color at paint time (a badge's own color/alpha
-# pulse, a streak tier's gray/gold, ...) rather than baked into the grid --
-# the same idiom `_cat_palette`'s night-tint swap already uses for `B`.
+# -- tail -----------------------------------------------------------------
+# The same "stroke a wider outline-colored line underneath, a narrower
+# fill-colored line on top" technique v1.15 introduced for a real
+# silhouette outline (not just a centerline seam) -- still the right
+# technique for a smooth curved tail, just re-scaled for this round's
+# smaller chibi torso.
 
-_CHROME_GRID_SIZE = 16
-
-_F_badge_critical_0 = (
-    "................",
-    "................",
-    "................",
-    "................",
-    ".OOOOOOOOOOOO...",
-    ".OWWWWWWWWWWO...",
-    ".OWFFFFWWWWWOOO.",
-    ".OWFFFFWWWWWOOO.",
-    ".OWFFFFWWWWWOOO.",
-    ".OWFFFFWWWWWOOO.",
-    ".OWWWWWWWWWWO...",
-    ".OOOOOOOOOOOO...",
-    "................",
-    "................",
-    "................",
-    "................",
-)
-_F_badge_low_0 = (
-    "................",
-    "................",
-    "................",
-    "................",
-    ".OOOOOOOOOOOO...",
-    ".OWWWWWWWWWWO...",
-    ".OWFFFFFFFWWOOO.",
-    ".OWFFFFFFFWWOOO.",
-    ".OWFFFFFFFWWOOO.",
-    ".OWFFFFFFFWWOOO.",
-    ".OWWWWWWWWWWO...",
-    ".OOOOOOOOOOOO...",
-    "................",
-    "................",
-    "................",
-    "................",
-)
-_F_badge_charging_0 = (
-    ".........O......",
-    "........OF......",
-    ".......OFF......",
-    "......OFFF......",
-    ".....OFFFF......",
-    "....OFFFFFFFFFOO",
-    "....FFFFFFFFFOOO",
-    "...FFFFFFFFFFOO.",
-    "..FFFFFFFFFFOO..",
-    ".FFFFFFFFFFOO...",
-    "OOOOOOOFFFOO....",
-    "......OFFOO.....",
-    "......OFOO......",
-    "......OOO.......",
-    "......OO........",
-    "......O.........",
-)
-_F_badge_sweat_0 = (
-    "........OOO.....",
-    "......OOOOOOO...",
-    "......OFFFFOO...",
-    "....OOFFFFFFFOO.",
-    "....OFFFFFFFFFO.",
-    "...OOFFFFFFFFFO.",
-    "....OOFFFFFFFFO.",
-    ".....OFFFFFFFFOO",
-    "......OFFFFFFFFO",
-    ".......OOFFFFOO.",
-    "........OOOOOO..",
-    "..........OOO...",
-    "................",
-    "................",
-    "................",
-    "................",
-)
-_F_badge_disk_0 = (
-    "................",
-    "......O.........",
-    "...OOOWOOO......",
-    "..OWWWWWWWO.....",
-    ".OWWWWWWWWWO....",
-    ".OWWWWOWWWWO....",
-    ".OWWWOOOWWWO....",
-    "OWWWOOOOOWWWO...",
-    ".OWWWOOOWWWO....",
-    ".OWWWWOWWWWOOO..",
-    ".OWWWWWWWWOOOO..",
-    "..OWWWWWOOFOOO..",
-    "...OOOWOOOFOOO..",
-    "......O...OFFO..",
-    "............OO..",
-    "................",
-)
+_TAIL_WIDTH = 7.0
+_TAIL_WIDTH_CURLED = 5.5
+_TAIL_OUTLINE_EXTRA = 3.2
 
 
-def _draw_chrome_icon(
-    painter: QPainter, pos: QPointF, frame: pixelart.Frame, palette: pixelart.Palette, px: float
+def _draw_tail(
+    painter: QPainter, center: QPointF, phase: float, curled: bool = False, night: bool = False
 ) -> None:
-    size = _CHROME_GRID_SIZE * px
-    rect = QRectF(0, 0, size, size)
-    rect.moveCenter(pos)
-    image = pixelart.render_frame(frame, palette)
-    pixelart.draw_pixel_image(painter, image, rect)
-
-
-_BADGE_POS_OFFSET = QPointF(-BODY_RX * 0.85, -BODY_RY * 1.15)
-_BADGE_PX = 1.4
-
-
-def _draw_status_badge(painter: QPainter, center: QPointF, badge: Badge, t: float) -> None:
-    pos = QPointF(center.x() + _BADGE_POS_OFFSET.x(), center.y() + _BADGE_POS_OFFSET.y())
-
-    if badge == Badge.CRITICAL_BATTERY:
-        _draw_battery_icon(painter, pos, QColor("#E53935"), pulse_speed=6.0, t=t, critical=True)
-    elif badge == Badge.LOW_BATTERY:
-        _draw_battery_icon(painter, pos, QColor("#FB8C00"), pulse_speed=1.6, t=t, critical=False)
-    elif badge == Badge.CHARGING:
-        palette = {"O": OUTLINE_COLOR.name(), "F": "#FDD835"}
-        _draw_chrome_icon(painter, pos, _F_badge_charging_0, palette, _BADGE_PX)
-    elif badge == Badge.HIGH_RESOURCE:
-        bob = 1.2 * math.sin(t * 3.0)
-        palette = {"O": OUTLINE_COLOR.name(), "F": "#4FC3F7"}
-        _draw_chrome_icon(
-            painter, QPointF(pos.x(), pos.y() + bob), _F_badge_sweat_0, palette, _BADGE_PX
-        )
-    elif badge == Badge.LOW_DISK:
-        palette = {"O": OUTLINE_COLOR.name(), "W": "#B0BEC5", "F": "#FFB300"}
-        _draw_chrome_icon(painter, pos, _F_badge_disk_0, palette, _BADGE_PX)
-
-
-def _draw_battery_icon(
-    painter: QPainter, pos: QPointF, color: QColor, pulse_speed: float, t: float, critical: bool
-) -> None:
-    # Alpha is rounded to 2 decimal places before it enters the palette --
-    # otherwise this continuously-varying pulse would mint a brand-new
-    # cached QImage on essentially every frame (see pixelart.py's own note
-    # on why callers with a continuous value need to do this).
-    alpha = round(0.55 + 0.45 * (0.5 + 0.5 * math.sin(t * pulse_speed)), 2)
-    fill = QColor(color)
-    fill.setAlphaF(alpha)
-    frame = _F_badge_critical_0 if critical else _F_badge_low_0
-    palette = {"O": OUTLINE_COLOR.name(), "W": WHITE.name(), "F": fill.name(QColor.HexArgb)}
-    _draw_chrome_icon(painter, pos, frame, palette, _BADGE_PX)
-
-
-# -- commit streak ---------------------------------------------------------
-
-_STREAK_POS_OFFSET = QPointF(BODY_RX * 0.85, -BODY_RY * 1.15)
-
-_F_streak_star_0 = (
-    "................",
-    "........O.......",
-    ".......OOO......",
-    ".......OFO......",
-    ".......FFF......",
-    "......OFFFO.....",
-    "..OFFFFFFFFFFFO.",
-    "...OOFFFFFFFOO..",
-    ".....OFFFFFO....",
-    ".....OFFFFFO....",
-    ".....FFFOFFF....",
-    "....OFFO.OFFO...",
-    "....OOO...OOO...",
-    "....O.......O...",
-    "................",
-    "................",
-)
-_F_streak_crown_0 = (
-    "................",
-    ".......O....O...",
-    ".O....OOO..OOO.O",
-    ".OO...OFO..OFO.O",
-    ".OOF.OOFF..FFF.O",
-    ".OOFFOFFFOOFFFOO",
-    ".OOFFOFFFFFFFFFO",
-    ".OOFFFFFFFFFFFOO",
-    ".OOFFFFFFFFFFFOO",
-    ".OOFFFFFFFFFFFOO",
-    ".OOFFFFFFFFFFFOO",
-    ".OOFFFFFFFFFFFOO",
-    ".OOFFFFFFFFFFFOO",
-    ".OOOOOOOOOOOOOOO",
-    "................",
-    "................",
-)
-
-
-def _draw_streak_icon(painter: QPainter, center: QPointF, streak: int, t: float) -> None:
-    pos = QPointF(center.x() + _STREAK_POS_OFFSET.x(), center.y() + _STREAK_POS_OFFSET.y())
-    if streak >= 30:
-        palette = {"O": OUTLINE_COLOR.name(), "F": "#FFD700"}
-        _draw_chrome_icon(painter, pos, _F_streak_crown_0, palette, px=1.3)
-        return
-    # A gentle brightness "twinkle" -- v1.15/pre-v1.16 pulsed the star's own
-    # *radius* continuously, but continuously rescaling a nearest-neighbor
-    # pixel image would re-blur its edges every frame; pulsing alpha instead
-    # keeps every frame genuinely crisp while still reading as a twinkle.
-    twinkle = round(min(1.0, 0.7 + 0.15 * (1.0 + math.sin(t * 3.0))), 2)
-    tier_color = QColor("#FFD700") if streak >= 7 else QColor("#B0BEC5")
-    tier_color.setAlphaF(twinkle)
-    palette = {"O": OUTLINE_COLOR.name(), "F": tier_color.name(QColor.HexArgb)}
-    _draw_chrome_icon(painter, pos, _F_streak_star_0, palette, px=1.5 if streak >= 7 else 1.1)
-
-
-# -- particles --------------------------------------------------------------
-# Generic small fading dots (drag-trail sparkles, the shooting star) --
-# unchanged from v1.15: still simple flat dots, not "the character's own
-# drawn frame" this round is about, and the spec explicitly leaves a
-# particle's continuous drift/fade alone.
-
-_PARTICLE_COLOR = QColor("#FFD54F")
-
-
-def draw_particles(painter: QPainter, positions: list[tuple[float, float, float]]) -> None:
-    if not positions:
-        return
     painter.save()
-    painter.setPen(Qt.NoPen)
-    for x, y, opacity in positions:
-        color = QColor(_PARTICLE_COLOR)
-        color.setAlphaF(max(0.0, min(1.0, opacity)))
+    torso_y = center.y() + (TORSO_OFFSET_Y_AWAY if curled else TORSO_OFFSET_Y)
+
+    if curled:
+        # Tucked into a small curled loop against the flattened lying
+        # torso -- reads as "settled down to sleep" rather than alert.
+        # Endpoints are kept well separated (not a tight ~9-unit loop) so
+        # the RoundCap line ends don't merge into one solid blob at this
+        # bolder outline width -- the same lesson v1.15's own dev notes
+        # recorded for its away pose.
+        width = _TAIL_WIDTH_CURLED
+        base = QPointF(center.x() + TORSO_RX_AWAY * 0.85, torso_y + 2)
+        c1 = QPointF(base.x() + 11, base.y() - 4)
+        c2 = QPointF(base.x() + 13, base.y() - 17)
+        end = QPointF(base.x() - 2, base.y() - 15)
+    else:
+        width = _TAIL_WIDTH
+        # Rooted at the torso's own lower-back side (well inside its
+        # silhouette, not right at the head/torso seam) so the visible
+        # curve reads as clearly emerging from the body, not floating near
+        # the busy head/torso junction -- confirmed by rendering an earlier
+        # version with the root right at that seam and finding the tail
+        # read as a disconnected loose hook, not an attached tail.
+        base = QPointF(center.x() + TORSO_RX * 0.9, torso_y + TORSO_RY * 0.45)
+        sway = 12.0 * phase
+        c1 = QPointF(base.x() + 15, base.y() - 3 + sway * 0.3)
+        c2 = QPointF(base.x() + 19, base.y() - 23 + sway)
+        end = QPointF(base.x() + 9, base.y() - 36 + sway * 1.1)
+
+    path = QPainterPath(base)
+    path.cubicTo(c1, c2, end)
+
+    outline = _outline_pen(width + _TAIL_OUTLINE_EXTRA)
+    painter.setPen(outline)
+    painter.setBrush(Qt.NoBrush)
+    painter.drawPath(path)
+
+    fill = QPen(_fur_color(night), width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    painter.setPen(fill)
+    painter.drawPath(path)
+    painter.restore()
+
+
+# -- torso + paws -----------------------------------------------------------
+
+
+def _draw_torso(
+    painter: QPainter, center: QPointF, breathe: float, night: bool = False, lying: bool = False
+) -> None:
+    painter.save()
+    rx = TORSO_RX_AWAY if lying else TORSO_RX
+    ry = TORSO_RY_AWAY if lying else TORSO_RY
+    offset_y = TORSO_OFFSET_Y_AWAY if lying else TORSO_OFFSET_Y
+    rect = QRectF(0, 0, rx * 2, ry * 2 * breathe)
+    rect.moveCenter(QPointF(center.x(), center.y() + offset_y))
+
+    painter.setPen(_outline_pen())
+    painter.setBrush(_fur_color(night))
+    painter.drawEllipse(rect)
+    painter.restore()
+
+
+def _draw_paws(painter: QPainter, center: QPointF, away: bool) -> None:
+    """Two small visible paws peeking out beneath the torso -- matching the
+    head/torso's own outline weight, per the confirmed design (not a
+    smaller detail-scale stroke like the whiskers/mouth)."""
+    painter.save()
+    offset_y = TORSO_OFFSET_Y_AWAY if away else TORSO_OFFSET_Y
+    ry = TORSO_RY_AWAY if away else TORSO_RY
+    dx = PAW_DX_AWAY if away else PAW_DX
+    paw_y = center.y() + offset_y + ry * 0.72
+    painter.setPen(_outline_pen())
+    painter.setBrush(WHITE)
+    for side in (-1, 1):
+        rect = QRectF(0, 0, PAW_RX * 2, PAW_RY * 2)
+        rect.moveCenter(QPointF(center.x() + side * dx, paw_y))
+        painter.drawEllipse(rect)
+    painter.restore()
+
+
+# -- ears -------------------------------------------------------------------
+# Asymmetric, per the confirmed design: one ear plain white (the base fur
+# color), the other plain orange (theme.ACCENT) -- not a matching pair, and
+# not a two-tone ear with a separate inner-ear shade, just one flat color
+# each, which is what actually reads as "calico" rather than "mismatched
+# highlight." The orange ear sits on the same side as the face's own orange
+# patch below, so the two read as one coherent marking rather than two
+# unrelated accents.
+
+_EAR_ACCENT_SIDE = 1  # the right ear (character's own right) is orange
+
+
+def _draw_ears(
+    painter: QPainter,
+    center: QPointF,
+    breathe: float,
+    perked: bool = False,
+    wiggle: bool = False,
+    t: float = 0.0,
+    drooping: bool = False,
+    night: bool = False,
+) -> None:
+    painter.save()
+    height_scale = 1.25 if perked else (0.45 if drooping else 1.0)
+    lean = 0.5 if perked else (1.7 if drooping else 1.0)
+    sway = 2.2 * math.sin(t * 3.0) if wiggle else 0.0
+
+    for side in (-1, 1):
+        ex = center.x() + side * BODY_RX * 0.62
+        ey = center.y() - BODY_RY * 0.78
+        base_in = QPointF(ex - 13 * side, ey + 11)
+        base_out = QPointF(ex + 16 * side, ey + 13)
+        tip = QPointF(ex + 5 * side * lean + sway, ey - 25 * breathe * height_scale)
+
+        path = QPainterPath(base_in)
+        path.quadTo(QPointF(ex - 3 * side, ey - 12 * breathe * height_scale), tip)
+        path.quadTo(QPointF(ex + 11 * side, ey - 1 * breathe * height_scale), base_out)
+        path.closeSubpath()
+
+        color = _patch_color(night) if side == _EAR_ACCENT_SIDE else _fur_color(night)
+        painter.setPen(_outline_pen())
         painter.setBrush(color)
-        radius = 1.5 + 1.5 * opacity
-        painter.drawEllipse(QPointF(x, y), radius, radius)
+        painter.drawPath(path)
+    painter.restore()
+
+
+@contextmanager
+def _head_tilt(painter: QPainter, center: QPointF, degrees: float):
+    """Rotate everything drawn inside the block by `degrees` around
+    `center`, then restore -- used to tilt just the ears+head+face (not the
+    torso/tail, drawn outside this block) for the curiosity reaction."""
+    painter.save()
+    try:
+        painter.translate(center)
+        painter.rotate(degrees)
+        painter.translate(-center.x(), -center.y())
+        yield
+    finally:
+        painter.restore()
+
+
+# -- head + the calico facial patch -----------------------------------------
+# The confirmed technique: fill the head fully in the base fur color, then
+# fill the orange patch *clipped to the head's own outline path* (so its
+# outer edge always sits flush with the head silhouette, no hand-positioned
+# points to get wrong and no gap/sliver of fur ever visible between them),
+# then stroke the head's outline on top last so one continuous bold line
+# bounds both fur colors cleanly.
+
+_PATCH_HALF_W = 10.0
+_PATCH_HALF_H = 40.0
+_PATCH_ANGLE_DEGREES = 12.0
+
+
+def _head_path(center: QPointF) -> QPainterPath:
+    path = QPainterPath()
+    rect = QRectF(0, 0, BODY_RX * 2, BODY_RY * 2)
+    rect.moveCenter(center)
+    path.addEllipse(rect)
+    return path
+
+
+def _draw_head(painter: QPainter, center: QPointF, night: bool = False) -> None:
+    painter.save()
+    head_path = _head_path(center)
+
+    # 1) base fur fill, no stroke yet.
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(_fur_color(night))
+    painter.drawPath(head_path)
+
+    # 2) the orange patch, clipped to the head's own silhouette -- drawn
+    # deliberately oversized (its ellipse extends well past the head's own
+    # edge on every side) so the clip -- not hand-placed points -- is what
+    # guarantees the flush outer edge.
+    painter.save()
+    painter.setClipPath(head_path)
+    patch_center = QPointF(
+        center.x() + _EAR_ACCENT_SIDE * BODY_RX * 0.76, center.y() - BODY_RY * 0.06
+    )
+    painter.translate(patch_center)
+    painter.rotate(_EAR_ACCENT_SIDE * _PATCH_ANGLE_DEGREES)
+    painter.setBrush(_patch_color(night))
+    painter.drawEllipse(QPointF(0, 0), _PATCH_HALF_W, _PATCH_HALF_H)
+    painter.restore()
+
+    # 3) the head's own bold outline, stroked last on top of both fills.
+    painter.setPen(_outline_pen())
+    painter.setBrush(Qt.NoBrush)
+    painter.drawPath(head_path)
+    painter.restore()
+
+
+# -- face detail: blush + whisker marks --------------------------------------
+# Drawn for every front-facing state except mid-sulk (the face is turned
+# away, so a floating blush/whisker mark on an unseen cheek would read as a
+# mistake, not a style choice) -- the same "only shown where it makes sense"
+# rule this codebase already applies to e.g. the away zzz overlay.
+
+_BLUSH_OFFSET = QPointF(19.0, 11.0)
+_BLUSH_RADIUS = 6.5
+_BLUSH_ALPHA = 95
+
+# Whisker marks on both cheeks, mirrored: orange marks over the plain white
+# fur side, white marks over the orange patch side. The patch side's x-range
+# is shifted further out (not a literal mirror of the white side's range)
+# so the marks actually land on the patch fill rather than partway off it,
+# confirmed by looking at the rendered patch's own footprint at cheek
+# height before picking these numbers.
+_WHISKER_Y_OFFSET = 5.0
+_WHISKER_ROWS = (-4.0, 0.0, 4.0)
+
+
+def _draw_face_details(painter: QPainter, center: QPointF) -> None:
+    painter.save()
+
+    # Blush.
+    painter.setPen(Qt.NoPen)
+    blush = QColor(BLUSH_COLOR)
+    blush.setAlpha(_BLUSH_ALPHA)
+    painter.setBrush(blush)
+    for side in (-1, 1):
+        pos = QPointF(center.x() + side * _BLUSH_OFFSET.x(), center.y() + _BLUSH_OFFSET.y())
+        painter.drawEllipse(pos, _BLUSH_RADIUS, _BLUSH_RADIUS)
+
+    # Whisker marks.
+    for side in (-1, 1):
+        color = FUR_COLOR if side == _EAR_ACCENT_SIDE else PATCH_COLOR
+        pen = QPen(color)
+        pen.setWidthF(_DETAIL_PEN_WIDTH)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        if side == _EAR_ACCENT_SIDE:
+            inner_x, outer_x = center.x() + side * 17, center.x() + side * 30
+        else:
+            inner_x, outer_x = center.x() + side * 9, center.x() + side * 24
+        wy = center.y() + _WHISKER_Y_OFFSET
+        for row in _WHISKER_ROWS:
+            painter.drawLine(QPointF(inner_x, wy + row), QPointF(outer_x, wy + row * 1.6))
+    painter.restore()
+
+
+# -- eyes + mouth -------------------------------------------------------------
+# The confirmed default: simple filled-circle dot eyes (no crescents) and a
+# small simple mouth. Closed/squinted states use a thin single stroked
+# curve instead of a dot -- still simple, never a filled crescent shape.
+
+_EYE_DX = 12.0
+_EYE_Y_OFFSET = -4.0
+_EYE_RADIUS = 4.4
+_MOUTH_Y_OFFSET = 12.0
+
+
+def _draw_eye_dot(painter: QPainter, ex: float, ey: float, radius: float = _EYE_RADIUS) -> None:
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(OUTLINE_COLOR)
+    painter.drawEllipse(QPointF(ex, ey), radius, radius)
+
+
+def _draw_eye_curve(
+    painter: QPainter, ex: float, ey: float, half_width: float = 5.5, bulge: float = 3.0
+) -> None:
+    pen = QPen(OUTLINE_COLOR)
+    pen.setWidthF(_DETAIL_PEN_WIDTH)
+    pen.setCapStyle(Qt.RoundCap)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    path = QPainterPath(QPointF(ex - half_width, ey))
+    path.quadTo(QPointF(ex, ey + bulge), QPointF(ex + half_width, ey))
+    painter.drawPath(path)
+
+
+def _mouth_pen() -> QPen:
+    pen = QPen(OUTLINE_COLOR)
+    pen.setWidthF(_DETAIL_PEN_WIDTH)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    return pen
+
+
+def _draw_face(painter: QPainter, center: QPointF, mood: Mood, t: float) -> None:
+    if mood == Mood.IDLE:
+        _draw_idle_face(painter, center, t)
+    elif mood == Mood.HAPPY:
+        _draw_happy_face(painter, center)
+    else:
+        _draw_waiting_face(painter, center, t)
+
+
+# A brief periodic blink -- eyes swap from open dots to a closed curve for a
+# short window every cycle -- the one piece of "discrete" timing kept in an
+# otherwise continuous style, since real blinking reads as a snap, not a
+# smooth morph; every other animation here is a plain continuous sine.
+_BLINK_CYCLE_SECONDS = 4.0
+_BLINK_DURATION_SECONDS = 0.16
+
+
+def _is_blinking(t: float) -> bool:
+    return (t % _BLINK_CYCLE_SECONDS) < _BLINK_DURATION_SECONDS
+
+
+def _draw_idle_face(painter: QPainter, center: QPointF, t: float) -> None:
+    painter.save()
+    eye_y = center.y() + _EYE_Y_OFFSET
+    blinking = _is_blinking(t)
+    for side in (-1, 1):
+        ex = center.x() + side * _EYE_DX
+        if blinking:
+            _draw_eye_curve(painter, ex, eye_y, half_width=5.0, bulge=2.0)
+        else:
+            _draw_eye_dot(painter, ex, eye_y)
+
+    mouth_y = center.y() + _MOUTH_Y_OFFSET
+    painter.setPen(_mouth_pen())
+    path = QPainterPath(QPointF(center.x() - 4, mouth_y))
+    path.quadTo(QPointF(center.x(), mouth_y + 3), QPointF(center.x() + 4, mouth_y))
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_happy_face(painter: QPainter, center: QPointF) -> None:
+    painter.save()
+    eye_y = center.y() + _EYE_Y_OFFSET + 2
+    for side in (-1, 1):
+        ex = center.x() + side * _EYE_DX
+        _draw_eye_curve(painter, ex, eye_y, half_width=5.5, bulge=-4.5)
+
+    mouth_y = center.y() + _MOUTH_Y_OFFSET - 1
+    painter.setPen(_mouth_pen())
+    path = QPainterPath(QPointF(center.x() - 8, mouth_y - 2))
+    path.quadTo(QPointF(center.x(), mouth_y + 7), QPointF(center.x() + 8, mouth_y - 2))
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_waiting_face(painter: QPainter, center: QPointF, t: float) -> None:
+    painter.save()
+    glance = 1.6 * math.sin(t * 1.3)
+    eye_y = center.y() + _EYE_Y_OFFSET
+    for side in (-1, 1):
+        ex = center.x() + side * _EYE_DX + glance
+        _draw_eye_dot(painter, ex, eye_y, radius=4.0)
+
+    mouth_y = center.y() + _MOUTH_Y_OFFSET
+    painter.setPen(_mouth_pen())
+    path = QPainterPath(QPointF(center.x() - 5, mouth_y))
+    path.quadTo(QPointF(center.x(), mouth_y - 3), QPointF(center.x() + 5, mouth_y))
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_purr_face(painter: QPainter, center: QPointF, t: float) -> None:
+    """A content, slightly-squinted look while the mouse hovers over the
+    cat -- distinct from IDLE's periodic blink and HAPPY's wide smile."""
+    painter.save()
+    eye_y = center.y() + _EYE_Y_OFFSET + 1
+    squint = 0.6 + 0.15 * math.sin(t * 2.5)
+    for side in (-1, 1):
+        ex = center.x() + side * _EYE_DX
+        _draw_eye_curve(painter, ex, eye_y, half_width=5.0, bulge=3.0 * squint)
+
+    mouth_y = center.y() + _MOUTH_Y_OFFSET - 2
+    painter.setPen(_mouth_pen())
+    path = QPainterPath(QPointF(center.x() - 5, mouth_y - 1))
+    path.quadTo(QPointF(center.x(), mouth_y + 4), QPointF(center.x() + 5, mouth_y - 1))
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_focused_face(painter: QPainter, center: QPointF, t: float) -> None:
+    """An intent, unblinking stare while a matching test/build process runs
+    -- fixed dead-ahead dot eyes (a slow size pulse standing in for
+    "concentrating") and a flat, neutral mouth, no eyebrows/worry lines."""
+    painter.save()
+    eye_y = center.y() + _EYE_Y_OFFSET - 1
+    pulse = _EYE_RADIUS + 0.5 * math.sin(t * 2.2)
+    for side in (-1, 1):
+        ex = center.x() + side * _EYE_DX
+        _draw_eye_dot(painter, ex, eye_y, radius=pulse)
+
+    mouth_y = center.y() + _MOUTH_Y_OFFSET
+    painter.setPen(_mouth_pen())
+    painter.drawLine(QPointF(center.x() - 4, mouth_y), QPointF(center.x() + 4, mouth_y))
+    painter.restore()
+
+
+def _draw_sleep_face(painter: QPainter, center: QPointF, t: float) -> None:
+    """The AWAY deep-sleep face: fully flat closed-eye lines -- distinct
+    from IDLE's occasional curved blink -- and a tiny closed mouth."""
+    painter.save()
+    eye_y = center.y() + _EYE_Y_OFFSET + 3
+    for side in (-1, 1):
+        ex = center.x() + side * _EYE_DX
+        _draw_eye_curve(painter, ex, eye_y, half_width=4.6, bulge=0.8)
+
+    mouth_y = center.y() + _MOUTH_Y_OFFSET - 4
+    painter.setPen(_mouth_pen())
+    painter.drawLine(QPointF(center.x() - 2, mouth_y), QPointF(center.x() + 2, mouth_y))
+    painter.restore()
+
+
+# "Curious" (v1.6): a new program was just detected launching. Perked ears
+# like "focused", but rotated together with the head around its own center
+# -- a head-tilt -- which is what keeps this from reading as a near-
+# duplicate of the focused stare.
+_CURIOSITY_TILT_DEGREES = 14.0
+
+
+def _draw_curious_face(painter: QPainter, center: QPointF, t: float) -> None:
+    """Wide dot eyes held steadily off to one side (looking at whatever
+    just appeared) and a small round open "o" mouth -- distinct from
+    FOCUSED's fixed pupils/flat mouth and WAITING's side-to-side glancing/
+    worried mouth."""
+    painter.save()
+    eye_y = center.y() + _EYE_Y_OFFSET - 1
+    shift = 2.6
+    for side in (-1, 1):
+        ex = center.x() + side * _EYE_DX + shift
+        _draw_eye_dot(painter, ex, eye_y, radius=4.6)
+
+    mouth_y = center.y() + _MOUTH_Y_OFFSET
+    painter.setPen(_mouth_pen())
+    painter.setBrush(WHITE)
+    painter.drawEllipse(QPointF(center.x(), mouth_y), 2.6, 2.6)
+    painter.restore()
+
+
+def _draw_face_turned(painter: QPainter, center: QPointF, stage: int, t: float) -> None:
+    """Sulking back-view poses, stages 0-3 ("fully reconciled" -- stage 4 --
+    is just the normal front view, handled by the caller falling through to
+    `_draw_face` once `turn_stage` goes back to `None`). The head/ears/
+    patch are already drawn normally by the caller; only the face itself
+    (and the blush/whisker detail, deliberately skipped here -- see
+    `_draw_face_details`'s own docstring) differs. Each stage reveals a bit
+    more face, as if glancing back over a shoulder."""
+    painter.save()
+
+    seam_pen = _outline_pen(_DETAIL_PEN_WIDTH)
+    seam_color = QColor(OUTLINE_COLOR)
+    seam_color.setAlpha(int(150 * (1.0 - stage / 3.0)))
+    seam_pen.setColor(seam_color)
+    painter.setPen(seam_pen)
+    painter.drawLine(QPointF(center.x(), center.y() - 16), QPointF(center.x(), center.y() + 10))
+
+    if stage <= 0:
+        painter.restore()
+        return
+
+    reveal = stage / 3.0
+    visible_sides = (1,) if stage == 1 else (-1, 1)
+    eye_y = center.y() + _EYE_Y_OFFSET
+    for side in visible_sides:
+        ex = center.x() + side * (5 + 6 * reveal)
+        _draw_eye_dot(painter, ex, eye_y, radius=2.0 + 2.5 * reveal)
+
+    if stage >= 3:
+        mouth_y = center.y() + _MOUTH_Y_OFFSET
+        painter.setPen(_mouth_pen())
+        path = QPainterPath(QPointF(center.x() - 3, mouth_y))
+        path.quadTo(QPointF(center.x(), mouth_y + 2), QPointF(center.x() + 3, mouth_y))
+        painter.drawPath(path)
+
     painter.restore()
 
 
@@ -1157,14 +784,7 @@ def _draw_mood_overlay(
 
 
 def _draw_zzz(painter: QPainter, center: QPointF, t: float, deep: bool = False) -> None:
-    # Left as plain drawn text rather than a pixel-grid glyph -- there's no
-    # small bitmap font in this codebase to draw "z" from a grid without
-    # inventing one from scratch, well out of proportion to what three
-    # drifting letters are worth. Antialiasing is turned off locally so it
-    # at least reads a little more "blocky retro" than a fully smoothed
-    # font would, without pretending it's genuine pixel art.
     painter.save()
-    painter.setRenderHint(QPainter.Antialiasing, False)
     font = QFont("Comic Sans MS", 10)
     font.setItalic(True)
     painter.setFont(font)
@@ -1191,33 +811,28 @@ def _draw_zzz(painter: QPainter, center: QPointF, t: float, deep: bool = False) 
     painter.restore()
 
 
-_F_heart_0 = (
-    "................",
-    "................",
-    ".....O.....O....",
-    "...OOPOO.OOPOO..",
-    "..OPPPPPOPPPPPO.",
-    "..OPPPPPOPPPPPO.",
-    ".OPPPPPPPPPPPPPO",
-    "..OPPPPPPPPPPPO.",
-    "..OPPPPPPPPPPPO.",
-    "...OOPPPPPPPOO..",
-    "....OOPPPPPOO...",
-    ".....OOPPPOO....",
-    "......OOPOO.....",
-    ".......OOO......",
-    "........O.......",
-    "................",
-)
-_HEART_PALETTE = {"O": OUTLINE_COLOR.name(), "P": "#F06292"}
-
-
 def _draw_heart(painter: QPainter, center: QPointF, t: float) -> None:
     painter.save()
     pulse = 1.0 + 0.12 * math.sin(t * 5.0)
     hx = center.x()
     hy = center.y() - BODY_RY * 1.55
-    _draw_chrome_icon(painter, QPointF(hx, hy), _F_heart_0, _HEART_PALETTE, px=1.3 * pulse)
+    size = 8.0 * pulse
+
+    path = QPainterPath()
+    path.moveTo(hx, hy + size * 0.6)
+    path.cubicTo(
+        QPointF(hx - size * 1.3, hy - size * 0.5),
+        QPointF(hx - size * 0.4, hy - size * 1.5),
+        QPointF(hx, hy - size * 0.4),
+    )
+    path.cubicTo(
+        QPointF(hx + size * 0.4, hy - size * 1.5),
+        QPointF(hx + size * 1.3, hy - size * 0.5),
+        QPointF(hx, hy + size * 0.6),
+    )
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(BLUSH_COLOR)
+    painter.drawPath(path)
 
     for i in range(3):
         sparkle_phase = (t * 0.8 + i * 0.33) % 1.0
@@ -1226,184 +841,271 @@ def _draw_heart(painter: QPainter, center: QPointF, t: float) -> None:
         alpha = int(255 * (1.0 - sparkle_phase))
         color = QColor("#FFD54F")
         color.setAlpha(max(0, alpha))
-        painter.setPen(Qt.NoPen)
         painter.setBrush(color)
         painter.drawEllipse(QPointF(sx, sy), 2.2, 2.2)
     painter.restore()
 
 
-_F_exclaim_0 = (
-    "................",
-    "........O.......",
-    ".....OOOWOOO....",
-    "....OWWWWWWWO...",
-    "...OWWWOOOWWWO..",
-    "..OWWWWOOOWWWWO.",
-    "..OWWWWOOOWWWWO.",
-    "..OWWWWOOOWWWWO.",
-    ".OWWWWWOOOWWWWWO",
-    "..OWWWWOOOWWWWO.",
-    "..OWWWWWWWWWWWO.",
-    "..OWWWWOOOWWWWO.",
-    "...OWWWOOOWWWO..",
-    "....OWWWWWWWO...",
-    ".....OOOWOOO....",
-    "........O.......",
-)
-_F_exclaim_urgent_0 = (
-    "................",
-    "........O.......",
-    ".....OOOWOOO....",
-    "....OWWWWWWWO...",
-    "...OWWOOWWOOWO..",
-    "..OWWWOOWWOOWWO.",
-    "..OWWWOOWWOOWWO.",
-    "..OWWWOOWWOOWWO.",
-    ".OWWWWOOWWOOWWWO",
-    "..OWWWOOWWOOWWO.",
-    "..OWWWWWWWWWWWO.",
-    "..OWWWOOWWOOWWO.",
-    "...OWWOOWWOOWO..",
-    "....OWWWWWWWO...",
-    ".....OOOWOOO....",
-    "................",
-)
-_EXCLAIM_PALETTE = {"O": OUTLINE_COLOR.name(), "W": WHITE.name()}
-
-
-def _draw_exclaim_bubble(
-    painter: QPainter, center: QPointF, t: float, urgent: bool = False
-) -> None:
+def _draw_exclaim_bubble(painter: QPainter, center: QPointF, t: float, urgent: bool = False) -> None:
+    painter.save()
     bounce = 2.0 * abs(math.sin(t * 3.0))
     bx = center.x() + BODY_RX * 0.55
     by = center.y() - BODY_RY * 1.45 - bounce
-    frame = _F_exclaim_urgent_0 if urgent else _F_exclaim_0
-    _draw_chrome_icon(painter, QPointF(bx, by), frame, _EXCLAIM_PALETTE, px=1.3)
+
+    radius = 11.0
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
+    painter.setBrush(WHITE)
+    painter.drawEllipse(QPointF(bx, by), radius, radius)
+
+    font = QFont("Segoe UI", 12, QFont.Bold)
+    painter.setFont(font)
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
+    metrics = QFontMetricsF(font)
+    text = "‼" if urgent else "!"
+    tw = metrics.horizontalAdvance(text)
+    th = metrics.ascent()
+    painter.drawText(QPointF(bx - tw / 2, by + th / 2 - 1), text)
+    painter.restore()
 
 
-# -- seasonal accessories -----------------------------------------------------
+# -- status badges ------------------------------------------------------
+# A separate overlay layer from mood, at most one small icon near the
+# top-left of the head. v1.17: still its own smaller-than-the-character
+# outline width (this round's small chrome gets restyled to match the new
+# bolder body outline too, per the spec's Part 4, but literally reusing
+# `_OUTLINE_PEN_WIDTH` at this ~6-12-unit icon scale would swallow the
+# shapes into blobs, the same lesson v1.15 already recorded).
+_SMALL_ICON_OUTLINE_WIDTH = 2.2
 
-_ACCESSORY_POS = QPointF(0.0, -BODY_RY * 1.55)
-
-_F_acc_witch_0 = (
-    "................",
-    "................",
-    "......OO........",
-    "......OO........",
-    "......HH........",
-    ".....OHHO.......",
-    ".....OHHO.......",
-    ".....HHHH.......",
-    "....OHHHHO......",
-    "....OHHHHO......",
-    "...VVVVVVVVV....",
-    "...VVVVVVVVV....",
-    "OHHHHHHHHHHHHHHO",
-    "OHHHHHHHHHHHHHHO",
-    "OOOOOOOOOOOOOOOO",
-    "................",
-)
-_F_acc_pomegranate_0 = (
-    ".......OO.......",
-    "......OOOO......",
-    ".....OOGGOO.....",
-    ".....OGGGGOO....",
-    "....ORRRRRRRO...",
-    "...ORRRRRRRRRO..",
-    "...ORRRRRRRRRO..",
-    "...ORRRRRRRRRO..",
-    "..ORRRRRRRRRRRO.",
-    "...ORRRRRRRRRO..",
-    "...ORRRRRRRRRO..",
-    "...ORRRRRRRRRO..",
-    "....ORRRRRRRO...",
-    ".....OOOROOO....",
-    "........O.......",
-    "................",
-)
-_F_acc_party_0 = (
-    ".......OWO......",
-    "......OWWWO.....",
-    ".......OWO......",
-    ".......TO.......",
-    "......OTTO......",
-    "......TTTT......",
-    ".....OTTTTO.....",
-    "....OTTTTTTO....",
-    "....OTTTTTTO....",
-    "...OTTTTTTTTO...",
-    "...OTTTTTTTTO...",
-    "..OTTTTTTTTTTO..",
-    "..OOOOOOOOOOOO..",
-    ".OOOOOOOOOOOOOO.",
-    "................",
-    "................",
-)
-_ACCESSORY_FRAMES = {
-    "halloween": _F_acc_witch_0,
-    "yalda": _F_acc_pomegranate_0,
-    "birthday": _F_acc_party_0,
-}
-_ACCESSORY_PALETTES: dict[str, pixelart.Palette] = {
-    "halloween": {"O": OUTLINE_COLOR.name(), "H": "#2B2B33", "V": "#7B4FA0"},
-    "yalda": {"O": OUTLINE_COLOR.name(), "R": "#B32B3A", "G": "#5C8A4A"},
-    "birthday": {"O": OUTLINE_COLOR.name(), "T": "#42A5F5", "W": WHITE.name()},
-}
+_BADGE_POS_OFFSET = QPointF(-BODY_RX * 0.85, -BODY_RY * 1.15)
 
 
-def _draw_accessory(painter: QPainter, center: QPointF, accessory: str, t: float) -> None:
-    frame = _ACCESSORY_FRAMES.get(accessory)
-    if frame is None:
+def _draw_status_badge(painter: QPainter, center: QPointF, badge: Badge, t: float) -> None:
+    pos = QPointF(center.x() + _BADGE_POS_OFFSET.x(), center.y() + _BADGE_POS_OFFSET.y())
+
+    if badge == Badge.CRITICAL_BATTERY:
+        _draw_battery_icon(painter, pos, QColor("#E53935"), pulse_speed=6.0, t=t)
+    elif badge == Badge.LOW_BATTERY:
+        _draw_battery_icon(painter, pos, QColor("#FB8C00"), pulse_speed=1.6, t=t)
+    elif badge == Badge.CHARGING:
+        _draw_lightning_icon(painter, pos)
+    elif badge == Badge.HIGH_RESOURCE:
+        _draw_sweat_drop_icon(painter, pos, t)
+    elif badge == Badge.LOW_DISK:
+        _draw_disk_warning_icon(painter, pos)
+
+
+def _draw_battery_icon(
+    painter: QPainter, pos: QPointF, color: QColor, pulse_speed: float, t: float
+) -> None:
+    painter.save()
+    alpha = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(t * pulse_speed))
+    fill = QColor(color)
+    fill.setAlphaF(alpha)
+
+    body = QRectF(0, 0, 13.0, 8.0)
+    body.moveCenter(pos)
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
+    painter.setBrush(fill)
+    painter.drawRoundedRect(body, 1.5, 1.5)
+
+    nub = QRectF(0, 0, 1.6, 3.6)
+    nub.moveCenter(QPointF(body.right() + 1.0, pos.y()))
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(fill)
+    painter.drawRect(nub)
+
+    inner = body.adjusted(2.0, 2.0, -6.0, -2.0)
+    painter.setBrush(color)
+    painter.drawRect(inner)
+    painter.restore()
+
+
+def _draw_lightning_icon(painter: QPainter, pos: QPointF) -> None:
+    painter.save()
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
+    painter.setBrush(QColor("#FDD835"))
+    path = QPainterPath(QPointF(pos.x() - 1.5, pos.y() - 7.0))
+    path.lineTo(QPointF(pos.x() + 3.0, pos.y() - 7.0))
+    path.lineTo(QPointF(pos.x() - 1.0, pos.y() + 0.5))
+    path.lineTo(QPointF(pos.x() + 2.5, pos.y() + 0.5))
+    path.lineTo(QPointF(pos.x() - 3.0, pos.y() + 7.0))
+    path.lineTo(QPointF(pos.x() + 0.5, pos.y() - 0.5))
+    path.lineTo(QPointF(pos.x() - 2.5, pos.y() - 0.5))
+    path.closeSubpath()
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_sweat_drop_icon(painter: QPainter, pos: QPointF, t: float) -> None:
+    painter.save()
+    bob = 1.2 * math.sin(t * 3.0)
+    dx, dy = pos.x(), pos.y() + bob
+    size = 6.0
+
+    path = QPainterPath()
+    path.moveTo(dx, dy - size)
+    path.cubicTo(
+        QPointF(dx - size * 0.9, dy + size * 0.2),
+        QPointF(dx - size * 0.5, dy + size),
+        QPointF(dx, dy + size),
+    )
+    path.cubicTo(
+        QPointF(dx + size * 0.5, dy + size),
+        QPointF(dx + size * 0.9, dy + size * 0.2),
+        QPointF(dx, dy - size),
+    )
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
+    painter.setBrush(QColor("#4FC3F7"))
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_disk_warning_icon(painter: QPainter, pos: QPointF) -> None:
+    painter.save()
+    disk_rect = QRectF(0, 0, 12.0, 12.0)
+    disk_rect.moveCenter(QPointF(pos.x() - 2.0, pos.y()))
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
+    painter.setBrush(QColor("#B0BEC5"))
+    painter.drawEllipse(disk_rect)
+    hole_rect = QRectF(0, 0, 4.0, 4.0)
+    hole_rect.moveCenter(disk_rect.center())
+    painter.setBrush(WHITE)
+    painter.drawEllipse(hole_rect)
+
+    warn_center = QPointF(pos.x() + 6.0, pos.y() + 4.0)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor("#FFB300"))
+    tri = [
+        QPointF(warn_center.x(), warn_center.y() - 6.0),
+        QPointF(warn_center.x() - 5.2, warn_center.y() + 4.0),
+        QPointF(warn_center.x() + 5.2, warn_center.y() + 4.0),
+    ]
+    _draw_polygon(painter, tri)
+
+    font = QFont("Segoe UI", 6, QFont.Bold)
+    painter.setFont(font)
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
+    painter.drawText(QPointF(warn_center.x() - 1.2, warn_center.y() + 2.2), "!")
+    painter.restore()
+
+
+def _draw_polygon(painter: QPainter, pts) -> None:
+    path = QPainterPath()
+    path.moveTo(pts[0])
+    for p in pts[1:]:
+        path.lineTo(p)
+    path.closeSubpath()
+    painter.drawPath(path)
+
+
+# -- commit streak ---------------------------------------------------------
+
+_STREAK_POS_OFFSET = QPointF(BODY_RX * 0.85, -BODY_RY * 1.15)
+
+
+def _draw_streak_icon(painter: QPainter, center: QPointF, streak: int, t: float) -> None:
+    pos = QPointF(center.x() + _STREAK_POS_OFFSET.x(), center.y() + _STREAK_POS_OFFSET.y())
+    if streak >= 30:
+        _draw_crown_icon(painter, pos)
+    elif streak >= 7:
+        _draw_star_icon(painter, pos, radius=7.5, color=QColor("#FFD700"), t=t)
+    else:
+        _draw_star_icon(painter, pos, radius=5.0, color=QColor("#B0BEC5"), t=t)
+
+
+def _star_points(center: QPointF, outer_r: float, inner_r: float) -> list[QPointF]:
+    points = []
+    for i in range(10):
+        r = outer_r if i % 2 == 0 else inner_r
+        angle = math.pi / 2 + i * math.pi / 5
+        points.append(QPointF(center.x() + r * math.cos(angle), center.y() - r * math.sin(angle)))
+    return points
+
+
+def _draw_star_icon(painter: QPainter, pos: QPointF, radius: float, color: QColor, t: float) -> None:
+    painter.save()
+    twinkle = 0.85 + 0.15 * math.sin(t * 3.0)
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
+    painter.setBrush(color)
+    _draw_polygon(painter, _star_points(pos, radius * twinkle, radius * 0.42))
+    painter.restore()
+
+
+def _draw_crown_icon(painter: QPainter, pos: QPointF) -> None:
+    painter.save()
+    w, h = 15.0, 9.0
+    base_y = pos.y() + h * 0.5
+    left_x = pos.x() - w / 2
+    points = [
+        QPointF(left_x, base_y),
+        QPointF(left_x, base_y - h),
+        QPointF(left_x + w * 0.25, base_y - h * 0.4),
+        QPointF(left_x + w * 0.5, base_y - h * 1.15),
+        QPointF(left_x + w * 0.75, base_y - h * 0.4),
+        QPointF(left_x + w, base_y - h),
+        QPointF(left_x + w, base_y),
+    ]
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
+    painter.setBrush(QColor("#FFD700"))
+    _draw_polygon(painter, points)
+    painter.restore()
+
+
+# -- particles --------------------------------------------------------------
+
+_PARTICLE_COLOR = QColor("#FFD54F")
+
+
+def draw_particles(painter: QPainter, positions: list[tuple[float, float, float]]) -> None:
+    if not positions:
         return
-    pos = QPointF(center.x() + _ACCESSORY_POS.x(), center.y() + _ACCESSORY_POS.y())
-    _draw_chrome_icon(painter, pos, frame, _ACCESSORY_PALETTES[accessory], px=1.7)
+    painter.save()
+    painter.setPen(Qt.NoPen)
+    for x, y, opacity in positions:
+        color = QColor(_PARTICLE_COLOR)
+        color.setAlphaF(max(0.0, min(1.0, opacity)))
+        painter.setBrush(color)
+        radius = 1.5 + 1.5 * opacity
+        painter.drawEllipse(QPointF(x, y), radius, radius)
+    painter.restore()
 
 
 # -- distraction nudge / high five paws --------------------------------------
-# Both keep their pre-v1.16 continuous *position* animation (a bob, a
-# wobble) exactly as before -- only the paw's own drawn shape is now a
-# pixel-art image instead of a smooth circle + dot toes.
-
-_F_paw_0 = (
-    "................",
-    "................",
-    "...OCO.OCO.OCO..",
-    "...CCC.CCC.CCC..",
-    "...OCOOOCOOOCO..",
-    "....OCCCCCCCO...",
-    "...OCCCCCCCCCO..",
-    "...OCCCCCCCCCO..",
-    "...OCCCCCCCCCO..",
-    "..OCCCCCCCCCCCO.",
-    "...OCCCCCCCCCO..",
-    "...OCCCCCCCCCO..",
-    "...OCCCCCCCCCO..",
-    "....OCCCCCCCO...",
-    ".....OOOCOOO....",
-    "........O.......",
-)
-_PAW_PALETTE = {"O": OUTLINE_COLOR.name(), "C": SECONDARY_FILL_COLOR.name()}
 
 
 def _draw_nudge_wave(painter: QPainter, center: QPointF, t: float) -> None:
+    painter.save()
     swing = math.sin(t * 8.0)
     paw_x = center.x() + BODY_RX * 0.95
     paw_y = center.y() + BODY_RY * 0.1 - 8.0 * max(0.0, swing)
-    _draw_chrome_icon(painter, QPointF(paw_x, paw_y), _F_paw_0, _PAW_PALETTE, px=0.85)
+
+    painter.setPen(_outline_pen())
+    painter.setBrush(SECONDARY_FILL_COLOR)
+    painter.drawEllipse(QPointF(paw_x, paw_y), 6.5, 6.5)
+    painter.restore()
 
 
 def _draw_high_five_paw(painter: QPainter, center: QPointF, t: float) -> None:
+    painter.save()
     wobble = 1.5 * math.sin(t * 10.0)
     paw_x = center.x() + BODY_RX * 0.85 + wobble
     paw_y = center.y() - BODY_RY * 0.75
-    _draw_chrome_icon(painter, QPointF(paw_x, paw_y), _F_paw_0, _PAW_PALETTE, px=1.0)
+
+    painter.setPen(_outline_pen())
+    painter.setBrush(SECONDARY_FILL_COLOR)
+    pad_radius = 7.5
+    painter.drawEllipse(QPointF(paw_x, paw_y), pad_radius, pad_radius)
+    for dx in (-4.0, 0.0, 4.0):
+        toe = QPointF(paw_x + dx, paw_y - pad_radius + 1.5)
+        painter.drawEllipse(toe, 2.2, 2.2)
+    painter.restore()
 
 
 # -- distraction/reminder speech bubble --------------------------------------
-# Unchanged from v1.14/v1.15 -- the bubble card itself is theme.py-era UI
-# chrome (a themed rounded rect, per v1.14's own dev-notes entry), not "the
-# cat/mouse sprite art" this round's spec scopes itself to. Only the small
-# paw overlay drawn alongside it (above) changed this round.
+# Unchanged from v1.14/v1.15/v1.16 -- the bubble card itself is theme.py-era
+# UI chrome, not "the cat/mouse sprite art" this round's spec scopes itself
+# to.
 
 _NUDGE_BUBBLE_BOTTOM_OFFSET = BODY_RY * 1.05
 
@@ -1420,12 +1122,9 @@ _BUBBLE_PADDING_Y = float(theme.SPACING_XS)
 
 
 def nudge_bubble_size(text: str, alert: bool) -> tuple[float, float]:
-    """The natural (unclamped) single-line bubble size, in canvas units,
-    for `text`/`alert` -- the single source of truth for this geometry,
-    shared between `_draw_speech_bubble`'s actual drawing below and
-    `KittenWindow._grow_for_nudge` (window.py), which needs to know how
-    wide the *physical window itself* must temporarily grow to fit a long
-    reply without clipping it."""
+    """The natural (unclamped) single-line bubble size, in canvas units --
+    the single source of truth shared between `_draw_speech_bubble`'s
+    actual drawing and `KittenWindow._grow_for_nudge` (window.py)."""
     font = QFont(theme.FONT_FAMILY, 9, QFont.Bold if alert else QFont.Normal)
     metrics = QFontMetricsF(font)
     padding_x, padding_y = _BUBBLE_PADDING_X, _BUBBLE_PADDING_Y
@@ -1505,8 +1204,6 @@ def _draw_speech_bubble(
 
 
 def _draw_alarm_icon(painter: QPainter, pos: QPointF, t: float) -> None:
-    """A small alarm-clock glyph shown at the left of an alert bubble --
-    unchanged v1.14-era UI chrome, out of this round's scope."""
     painter.save()
     ring = 6.0 * math.sin(t * 9.0)
     painter.translate(pos)
@@ -1525,71 +1222,106 @@ def _draw_alarm_icon(painter: QPainter, pos: QPointF, t: float) -> None:
     painter.restore()
 
 
+# -- seasonal accessories -----------------------------------------------------
+
+_ACCESSORY_POS = QPointF(0.0, -BODY_RY * 1.55)
+
+
+def _draw_accessory(painter: QPainter, center: QPointF, accessory: str, t: float) -> None:
+    pos = QPointF(center.x() + _ACCESSORY_POS.x(), center.y() + _ACCESSORY_POS.y())
+    if accessory == "halloween":
+        _draw_witch_hat(painter, pos)
+    elif accessory == "yalda":
+        _draw_pomegranate_hat(painter, pos)
+    elif accessory == "birthday":
+        _draw_party_hat(painter, pos)
+
+
+def _draw_witch_hat(painter: QPainter, pos: QPointF) -> None:
+    painter.save()
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
+    painter.setBrush(QColor("#2B2B33"))
+
+    brim = QRectF(0, 0, 28.0, 6.0)
+    brim.moveCenter(QPointF(pos.x(), pos.y() + 6.0))
+    painter.drawEllipse(brim)
+
+    cone = QPainterPath(QPointF(pos.x() - 9.0, pos.y() + 4.0))
+    cone.lineTo(QPointF(pos.x() + 2.0, pos.y() - 20.0))
+    cone.lineTo(QPointF(pos.x() + 9.0, pos.y() + 4.0))
+    cone.closeSubpath()
+    painter.drawPath(cone)
+
+    band = QRectF(0, 0, 20.0, 4.0)
+    band.moveCenter(QPointF(pos.x() - 0.5, pos.y() + 0.5))
+    painter.setBrush(QColor("#7B4FA0"))
+    painter.setPen(Qt.NoPen)
+    painter.drawRect(band)
+    painter.restore()
+
+
+def _draw_pomegranate_hat(painter: QPainter, pos: QPointF) -> None:
+    painter.save()
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
+    painter.setBrush(QColor("#B32B3A"))
+    body = QRectF(0, 0, 16.0, 15.0)
+    body.moveCenter(QPointF(pos.x(), pos.y() + 3.0))
+    painter.drawEllipse(body)
+
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor("#5C8A4A"))
+    crown = [
+        QPointF(pos.x() - 4.0, pos.y() - 3.5),
+        QPointF(pos.x(), pos.y() - 10.0),
+        QPointF(pos.x() + 4.0, pos.y() - 3.5),
+    ]
+    _draw_polygon(painter, crown)
+    painter.restore()
+
+
+_PARTY_HAT_COLOR = QColor("#42A5F5")
+
+
+def _draw_party_hat(painter: QPainter, pos: QPointF) -> None:
+    painter.save()
+    painter.setPen(_outline_pen(_SMALL_ICON_OUTLINE_WIDTH))
+    cone = QPainterPath(QPointF(pos.x() - 9.0, pos.y() + 5.0))
+    cone.lineTo(QPointF(pos.x(), pos.y() - 18.0))
+    cone.lineTo(QPointF(pos.x() + 9.0, pos.y() + 5.0))
+    cone.closeSubpath()
+
+    painter.setBrush(_PARTY_HAT_COLOR)
+    painter.drawPath(cone)
+
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(WHITE)
+    painter.drawEllipse(QPointF(pos.x(), pos.y() - 18.0), 2.5, 2.5)
+    painter.restore()
+
+
 # -- mouse (v1.7 chase minigame) --------------------------------------------
-# Its own small logical canvas (mirroring the cat's own canvas-plus-scale
-# transform pattern) and its own 16x16 pixel grid -- no mood/state of its
-# own, just a 2-frame breathing cycle per the spec.
+# Its own small logical canvas, same style family as the restyled cat (bold
+# outline, flat fill) but its own simple palette -- "its own small palette
+# choice is your call" per the spec, kept a plain cool slate gray as before
+# so it still reads as clearly "not the cat" at a glance.
 
 MOUSE_CANVAS = 64.0
 _MOUSE_CENTER = QPointF(MOUSE_CANVAS / 2, MOUSE_CANVAS / 2 + 4)
-
-_F_mouse_0 = (
-    "................",
-    "..........O.....",
-    "..OC......CO....",
-    "..CCO....OCCO...",
-    ".OOOOO..OOOOOO..",
-    ".....OOOBOOO....",
-    "....OBBBBBBBO...",
-    "...OBBBBBBBBBO..",
-    "...OBBOBBBBOBOO.",
-    "..OBBBBBBBBBBBOO",
-    "...OBBBBBBBBBOBO",
-    "...OBBBBBBBBBOBO",
-    "....OBBBBBBBOOOB",
-    ".....OOOBOOO..OO",
-    "........O.......",
-    "................",
-)
-_F_mouse_1 = (
-    "................",
-    "..........O.....",
-    "..OC......CO....",
-    "..CCO...OOCCO...",
-    ".OOOOOOOBOOOOO..",
-    "....OBBBBBBBO...",
-    "...OBBBBBBBBBO..",
-    "...OBBOBBBBOBO..",
-    "..OBBBBBBBBBBBO.",
-    "...OBBBBBBBBBOBO",
-    "...OBBBBBBBBBOBO",
-    "....OBBBBBBBOOBO",
-    ".....OOOBOOO.OOB",
-    "........O.....OO",
-    "................",
-    "................",
-)
-_MOUSE_FRAMES: tuple[pixelart.Frame, ...] = (_F_mouse_0, _F_mouse_1)
-_MOUSE_FRAME_SECONDS = 0.9
-# A flat, cool slate gray -- still clearly "not the cat" at a glance, with
-# the same warm SECONDARY_FILL_COLOR the cat's own inner ears/paw pads use
-# for its ears, so the two sprites read as one shared palette family.
 _MOUSE_BODY_COLOR = QColor("#AEB4BD")
-_MOUSE_PALETTE: pixelart.Palette = {
-    "O": OUTLINE_COLOR.name(),
-    "B": _MOUSE_BODY_COLOR.name(),
-    "C": SECONDARY_FILL_COLOR.name(),
-}
-_MOUSE_GRID_SIZE = 16
-_MOUSE_GRID_PX = 3.0
-_MOUSE_ANCHOR_COL = 8.0
-_MOUSE_ANCHOR_ROW = 9.0
+_MOUSE_BODY_RX, _MOUSE_BODY_RY = 15.0, 11.0
+_MOUSE_TAIL_WIDTH = 3.0
+_MOUSE_OUTLINE_WIDTH = _OUTLINE_PEN_WIDTH * (MOUSE_CANVAS / CANVAS)
+
+
+def _mouse_outline_pen(width: float = _MOUSE_OUTLINE_WIDTH) -> QPen:
+    pen = QPen(OUTLINE_COLOR)
+    pen.setWidthF(width)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    return pen
 
 
 def paint_mouse(painter: QPainter, rect: QRectF, t: float) -> None:
-    """Draws the mouse (rodent) sprite for the v1.7 chase minigame -- a
-    single 2-frame breathing pose, no mood/interaction states of its own,
-    exactly as before; only the drawing technique changed this round."""
     painter.save()
     painter.setRenderHint(QPainter.Antialiasing, True)
 
@@ -1598,16 +1330,64 @@ def paint_mouse(painter: QPainter, rect: QRectF, t: float) -> None:
     painter.scale(scale, scale)
     painter.translate(-MOUSE_CANVAS / 2, -MOUSE_CANVAS / 2)
 
+    breathe = 1.0 + 0.02 * math.sin(t * 2.4)
     center = _MOUSE_CENTER
-    size = _MOUSE_GRID_SIZE * _MOUSE_GRID_PX
-    target = QRectF(
-        center.x() - _MOUSE_ANCHOR_COL * _MOUSE_GRID_PX,
-        center.y() - _MOUSE_ANCHOR_ROW * _MOUSE_GRID_PX,
-        size,
-        size,
-    )
-    frame = _MOUSE_FRAMES[pixelart.frame_index(t, len(_MOUSE_FRAMES), _MOUSE_FRAME_SECONDS)]
-    image = pixelart.render_frame(frame, _MOUSE_PALETTE)
-    pixelart.draw_pixel_image(painter, image, target)
 
+    _draw_mouse_tail(painter, center)
+    _draw_mouse_ears(painter, center)
+    _draw_mouse_body(painter, center, breathe)
+    _draw_mouse_face(painter, center)
+
+    painter.restore()
+
+
+def _draw_mouse_body(painter: QPainter, center: QPointF, breathe: float) -> None:
+    painter.save()
+    rect = QRectF(0, 0, _MOUSE_BODY_RX * 2, _MOUSE_BODY_RY * 2 * breathe)
+    rect.moveCenter(center)
+    painter.setPen(_mouse_outline_pen())
+    painter.setBrush(_MOUSE_BODY_COLOR)
+    painter.drawEllipse(rect)
+    painter.restore()
+
+
+def _draw_mouse_ears(painter: QPainter, center: QPointF) -> None:
+    painter.save()
+    painter.setPen(_mouse_outline_pen())
+    painter.setBrush(SECONDARY_FILL_COLOR)
+    ear_y = center.y() - _MOUSE_BODY_RY * 0.95
+    for side in (-1, 1):
+        ex = center.x() + side * _MOUSE_BODY_RX * 0.55
+        painter.drawEllipse(QPointF(ex, ear_y), 6.5, 6.5)
+    painter.restore()
+
+
+def _draw_mouse_tail(painter: QPainter, center: QPointF) -> None:
+    painter.save()
+    base = QPointF(center.x() + _MOUSE_BODY_RX * 0.8, center.y() + _MOUSE_BODY_RY * 0.3)
+    c1 = QPointF(base.x() + 14, base.y() + 8)
+    c2 = QPointF(base.x() + 4, base.y() + 20)
+    end = QPointF(base.x() + 16, base.y() + 22)
+
+    path = QPainterPath(base)
+    path.cubicTo(c1, c2, end)
+
+    outline = _mouse_outline_pen(_MOUSE_TAIL_WIDTH + _MOUSE_OUTLINE_WIDTH * 1.2)
+    painter.setPen(outline)
+    painter.drawPath(path)
+
+    fill = QPen(_MOUSE_BODY_COLOR, _MOUSE_TAIL_WIDTH, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    painter.setPen(fill)
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _draw_mouse_face(painter: QPainter, center: QPointF) -> None:
+    painter.save()
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(OUTLINE_COLOR)
+    eye_y = center.y() - _MOUSE_BODY_RY * 0.2
+    for side in (-1, 1):
+        ex = center.x() + side * _MOUSE_BODY_RX * 0.4
+        painter.drawEllipse(QPointF(ex, eye_y), 2.2, 2.2)
     painter.restore()

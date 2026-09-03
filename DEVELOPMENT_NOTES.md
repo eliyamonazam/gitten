@@ -4715,3 +4715,243 @@ all kept their exact pre-v1.16 signatures.
 `src/gitten/pixelart.py` (new), `src/gitten/sprite.py` (fully rewritten
 internals, same public API), `assets/demo.png` (regenerated). No other
 file in `src/gitten/` changed.
+
+## 34. v1.17 -- a bold-outline calico chibi redesign (Phase 5), replacing v1.16
+
+Input is `GITTEN_V1_17_SPEC.md`, the last (so far) round of the character-art
+arc: fully replace v1.16's pixel-grid rendering with smooth `QPainterPath`
+vector shapes again -- closer to v1.15's own *technique* -- but restyled: a
+much thicker, bolder uniform outline; flat two-tone "calico" patch coloring
+(a white base plus `theme.ACCENT` as an asymmetric patch, not one solid
+body color); and a real chibi body (a large head, a small simple torso +
+two paws beneath it) instead of either recent redesign's single body-sized
+silhouette. Per the spec's explicit instruction, section 33 (v1.16) was
+read in full first, since this round replaces that style rather than
+layering on top of it. Unusually for this project, the user had already
+iterated on the exact look in conversation before handing off the spec, and
+supplied a specific confirmed-details checklist alongside it (asymmetric
+ear colors, a thin/narrow patch clipped flush to the head outline, mirrored
+whisker marks, cheek blush, simple dot eyes/mouth, a chibi body with two
+paws matching the head's outline weight) -- treated as binding, not just
+directional, and checked against the very first render before moving on to
+the rest, per the handoff's own instruction.
+
+### Part 0/1: the calico head + base idle pose, built and checked against the confirmed-details list first
+
+`FUR_COLOR = theme.SURFACE_CARD` (plain white) and `PATCH_COLOR =
+theme.ACCENT` (the existing coral) replace the old single `BODY_COLOR` --
+`theme.py`'s own audited light surface tone, per this project's standing
+"audit before inventing" discipline (same audit v1.13 originally did,
+re-checked here rather than assumed still current). `_OUTLINE_PEN_WIDTH`
+went from v1.15's 3.2 to **4.6** -- not a subtle bump, a visibly chunkier
+number, held uniform across body/torso/paws/ears/tail (small chrome keeps
+its own smaller, still-uniform width, the same two-tier approach v1.15
+established, bumped proportionally from 1.6 to 2.2).
+
+**The flush-patch-edge technique, exactly as the handoff specified**: the
+head is filled solid white first, then the orange patch -- an oversized
+ellipse, deliberately extending well past the head's own edge on every
+side -- is painted with `painter.setClipPath(head_path)` active, so the
+*clip*, not hand-placed control points, is what guarantees its outer edge
+sits flush against the head silhouette with no gap or sliver. The head's
+own bold outline is stroked last, on top of both fills, so one continuous
+line bounds both fur colors cleanly. Confirmed by cropping and zooming into
+the actual rendered boundary (not just eyeballing the full character) --
+see the render kept as this round's own verification evidence -- and it is
+genuinely flush, no gap at any zoom level tried.
+
+One ear is plain white, the other plain orange (`_EAR_ACCENT_SIDE`), on the
+same side as the facial patch so the two read as one coherent marking. The
+patch itself was narrowed once already during Part 1 verification
+(`_PATCH_HALF_W` 12 -> 10) after an early render read as covering more of
+the face than "thin/narrow" calls for. Whisker marks are mirrored per the
+spec: orange marks over the plain white cheek, white marks over the orange
+patch -- but the patch-side marks' x-range is deliberately *not* a literal
+mirror of the white side's range (shifted further out, tuned by actually
+rendering the patch and reading off where its own footprint sits at cheek
+height) so the marks land on the patch fill rather than partway off it.
+Blush reuses the app's existing heart-icon pink (`#F06292`, see below) at
+low alpha rather than inventing a new pink hue family. Eyes are plain
+filled black circles (no highlight dot, no crescent) with a small stroked
+mouth curve -- both drawn at a thinner `_DETAIL_PEN_WIDTH` (2.4) than the
+body's own outline, since the full body-scale stroke would swallow a
+whisker mark or a mouth curve at this size.
+
+**A real bug found and fixed during Part 1's own verification, not
+carried forward**: an early render of the tail (rooted only a few units
+inside the torso's own edge) looked like a disconnected floating hook
+rather than an attached tail -- confirmed by isolating just the torso+tail
+in their own render (no head) and finding they *did* connect there, then
+re-adding the head and finding the tail's curve crossed in and back out of
+the head's own silhouette, breaking it into what read as two unrelated
+arcs. Fixed by rooting the tail well inside the torso's own back/side
+(`TORSO_RX * 0.9`, `TORSO_RY * 0.45` in from center, a real margin rather
+than a few units) and re-shaping the curve's control points so it clears
+the torso before approaching the head, rather than climbing straight
+through it. Re-rendered and re-cropped after the fix to confirm the tail
+now reads as continuously attached, not just reasoned about from the
+coordinates alone.
+
+Verified both off-screen (`QPixmap`, cropped/zoomed for the patch-edge and
+tail checks above) and live, via a real `KittenWindow` screenshotted with
+the documented full-screen-grab-and-crop technique (section 30's own
+`grabWindow(winId)`-comes-back-black workaround, confirmed still necessary
+and still working) -- before touching any other pose, per the spec's own
+"apply to the base pose first and check it against this description before
+moving to the rest" instruction.
+
+### Part 2: happy, waiting, deep-sleep (AWAY) faces
+
+Eyes stay simple throughout: open states are the plain black dot; closed/
+squinted states swap to a single thin stroked curve (`_draw_eye_curve`) --
+never a filled crescent, which the spec's Part 0 explicitly ruled out for
+this style ("no crescents"). Idle adds the one genuinely discrete-feeling
+touch in an otherwise continuous-animation round: a brief periodic blink
+(`_is_blinking`, a 4.0s cycle with a 0.16s closed window) rather than a
+continuous eye-shape morph, since real blinking reads as a snap in every
+reference for this kind of character, not a smooth interpolation -- stated
+here explicitly as the one deliberate exception, not an oversight, the same
+"flag it plainly" standard this project holds itself to elsewhere (e.g.
+section 33's own `_draw_zzz` plain-text disclosure).
+
+The AWAY deep-sleep pose leans into the chibi-curled quality per the spec's
+own explicit note, via a second whole layout rather than just a different
+face: `TORSO_OFFSET_Y_AWAY` (28, vs. the sitting pose's 42) pulls the torso
+up closer under the head, `TORSO_RX_AWAY`/`TORSO_RY_AWAY` (25/12, vs. 20/16)
+flatten and widen it into a puddled shape, `PAW_DX_AWAY` (10, vs. 13) tucks
+the paws closer together, ears droop (`drooping=True`), and the tail curls
+into a short tucked loop rather than swaying -- all combined with flat
+closed-eye lines and a bigger/slower zzz drift (reused, not reinvented, via
+the existing `deep` flag). Verified live via `set_away(True)`: reads
+unmistakably as "curled into a sleepy ball," clearly distinct from IDLE at
+a glance rather than a relabeled version of it, the same bar section 31's
+own AWAY-pose work held itself to.
+
+### Part 3: interaction poses -- sulking, purr, focused, curious, high-five
+
+The head/ears/patch are always drawn normally (front-facing); only the
+face itself swaps for sulking's turned-away view (`_draw_face_turned`),
+exactly the architecture v1.15 established and this round kept. Blush and
+whisker marks are deliberately *not* drawn during a mid-sulk turn -- a
+floating cheek mark on a face that's supposed to be turned away would read
+as a mistake, not a style choice, so `_draw_face_details` is skipped
+whenever `turn_stage is not None`, the same "only shown where it makes
+sense" rule this codebase already applies to e.g. the AWAY zzz overlay
+never appearing during a plain mood state.
+
+Purr keeps its own squinted-curve eyes + content smile (distinct from
+idle's periodic blink); focused keeps fixed dead-ahead dot eyes with a slow
+size pulse standing in for concentration, plus a flat neutral mouth;
+curious keeps the existing head-tilt technique (`_head_tilt`, rotating
+ears+head+face only, torso/tail left alone) with eyes shifted to one side
+and a small round "o" mouth. High-five's raised-paw overlay and the
+distraction nudge's waving paw are unchanged in technique from v1.15 (a
+filled circle + three toe bumps in `SECONDARY_FILL_COLOR`), just drawn at
+the new bolder outline width. All six confirmed live (`set_attention`,
+`_hovering`, `_focused`, `_curious`, `_high_fiving`), each visibly distinct
+from the others at a glance.
+
+### Part 4: status badges, streak star/crown, seasonal accessories
+
+Restyled to the new bolder look rather than left at v1.15's width, per the
+spec's explicit "a mixed-style app would undercut the whole point of a
+coherent redesign" instruction -- `_SMALL_ICON_OUTLINE_WIDTH` went from 1.6
+to **2.2**, still deliberately thinner than the character's own 4.6 (tried
+the full width first on the lightning-bolt icon, confirmed it swallowed the
+shape into a blob, same lesson v1.15's own dev notes already recorded, just
+re-verified rather than assumed still true at this round's bigger numbers).
+Every badge/streak-tier/accessory shape itself is otherwise unchanged from
+v1.15's own flat-vector drawing code (already the right technique family
+this round returns to) -- confirmed via off-screen renders of every badge,
+both streak tiers, the crown, and all three seasonal accessories together.
+**One honest note, not smoothed over**: at this style's taller/more
+asymmetric ear shape, the top-left badge position and the top-center
+accessory position sometimes graze the nearest ear's own outline (seen
+clearly in the low-battery-badge render) -- still clearly legible and not
+a new problem this round introduced (the old pixel-art and v1.15 mascot
+versions both positioned these at the same head-relative offsets against
+their own differently-shaped ears), so not treated as a defect to chase
+down, but recorded here per this project's own "flag it plainly" standard.
+
+### Part 5: the mouse sprite
+
+Same style family (bold outline, flat fill), kept the existing simple
+`_MOUSE_BODY_COLOR` slate gray rather than giving it its own calico
+treatment -- the spec's own "its own small palette choice is your call"
+note, and a plain gray keeps it reading as clearly "not the cat" at a
+glance the way it always has. `_MOUSE_OUTLINE_WIDTH` scales from the cat's
+new 4.6 by the same canvas-ratio formula v1.15 introduced
+(`_OUTLINE_PEN_WIDTH * (MOUSE_CANVAS / CANVAS)`), so the *relative*
+boldness matches rather than the absolute number. Verified both off-screen
+and live via a real `MouseWindow.show_at(...)`, screenshotted with the same
+grab-and-crop technique.
+
+### `pixelart.py` deleted, not just left unused
+
+Confirmed via a repo-wide grep that `sprite.py` was the only importer
+before deleting it -- this round's whole point is that the pixel-grid
+rendering technique is gone, so keeping a dead, unused engine module around
+would misrepresent the codebase to a future reader searching for how
+sprites are drawn now. `theme.py`'s own `ACCENT` docstring note (added in
+v1.15 to describe the `sprite.BODY_COLOR` relationship) was updated rather
+than left stale, since that symbol no longer exists -- it's `PATCH_COLOR`
+now, and no longer the whole body, just the asymmetric patch/ear accent.
+
+### `assets/demo.png` regenerated
+
+Same 6-panel composition as every prior round (Happy+Low Battery, 30-Day
+Streak, Birthday, Purring, Sulking, Curious), same 600x480/200x240-per-panel
+layout, rendered through the real `paint_kitten` off-screen on the real
+`windows` Qt platform plugin (same font-rendering precaution as every prior
+regeneration, since every panel draws a text label). Compared against the
+pre-v1.17 pixel-art image: unmistakably a different rendering technique
+again -- smooth curves and a two-tone white/orange calico coloring instead
+of a hard-edged single-color pixel grid, genuinely, clearly a different
+style, not a palette tweak.
+
+### Does this genuinely achieve the confirmed style's specific charm, or fall short? Achieves it, with the badge/ear graze above as the one open item
+
+Every confirmed-details checklist item from the handoff was checked
+individually against a real render, not assumed from the code alone:
+asymmetric ear colors (yes), a thin/narrow patch (yes, after the one
+mid-Part-1 narrowing correction), the patch flush against the head outline
+with no gap (yes, confirmed by zooming into the actual boundary pixels),
+mirrored whisker marks in the opposite fur color on each side (yes), soft
+blush on both cheeks (yes), simple black dot eyes and a small simple mouth
+(yes), and a chibi body with two visible paws matching the head's own
+outline weight (yes). The one real defect caught during verification (the
+disconnected-looking tail) was found and fixed before moving past Part 1,
+not carried forward. The one still-open item is the badge/accessory-vs-ear
+graze noted in Part 4 above -- cosmetic, pre-existing in kind (every prior
+round has had *some* head-relative overlap at its own ear shape), and
+disclosed rather than silently accepted as fine.
+
+### Testing
+
+`pytest -q` -> unchanged at **234/234 passed** throughout -- this round is
+pure drawing-code (`sprite.py`'s `QPainter`/`QPainterPath` rendering), no
+pure-logic module touched, the same standard this file has been held to
+since section 12's Feature 3 first recorded why `sprite.py` has never had
+its own `test_sprite.py`. Every part above was verified with both an
+off-screen `QPixmap` render (cropped/zoomed where pixel-level precision
+mattered, e.g. the patch-edge and tail checks) and a real, live
+`KittenWindow`/`MouseWindow`, screenshotted via the full-screen-grab-and-
+crop technique documented in section 30's dev notes for this sandbox's
+`grabWindow(winId)`-comes-back-black limitation (confirmed still necessary
+and still working). `git status` was checked before committing: only
+`src/gitten/sprite.py` (rewritten), `src/gitten/pixelart.py` (deleted),
+`src/gitten/theme.py` (one docstring note), `pyproject.toml` (version bump
++ a stale "pixel-style" word in the description), and `assets/demo.png`
+(regenerated) changed -- `window.py`, `mouse_window.py`, `main.py`,
+`command_bar_window.py`, `settings_window.py`, and `dashboard_window.py`
+were **not** touched, confirmed directly, since `paint_kitten`/
+`paint_mouse`/`CANVAS`/`draw_particles`/`nudge_bubble_size` all kept their
+exact pre-v1.17 signatures.
+
+### Files changed this round
+
+`src/gitten/sprite.py` (fully rewritten internals, same public API),
+`src/gitten/pixelart.py` (deleted), `src/gitten/theme.py` (one docstring
+note, no value change), `pyproject.toml` (version bump to 0.17.0, one
+stale word fixed in the description), `assets/demo.png` (regenerated). No
+other file in `src/gitten/` changed.

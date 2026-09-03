@@ -53,13 +53,18 @@ from PySide6.QtWidgets import QPushButton
 
 # -- Palette ------------------------------------------------------------
 
-# Primary accent: the cat's own coral body color, reused verbatim rather
-# than reinvented -- see the module docstring for the v1.13 audit that
-# picked this value from what was then `sprite.BODY_COLOR`. As of v1.15
-# the relationship runs the other way: `sprite.BODY_COLOR` is now literally
-# `theme.ACCENT` (imported from here), the last piece of the v1.13-v1.15
-# visual-polish plan tying the character itself into this same palette --
-# this is still the one place the actual value is defined.
+# Primary accent: the cat's own coral color, reused verbatim rather than
+# reinvented -- see the module docstring for the v1.13 audit that picked
+# this value from what was then `sprite.BODY_COLOR`. As of v1.15 the
+# relationship runs the other way: the character's own accent color is
+# literally `theme.ACCENT` (imported from here), the last piece of the
+# v1.13-v1.15 visual-polish plan tying the character itself into this same
+# palette -- this is still the one place the actual value is defined. As of
+# v1.17's calico redesign, `sprite.BODY_COLOR` no longer exists: the
+# character's fur is mostly `theme.SURFACE_CARD` (white) now, with this
+# color used only as `sprite.PATCH_COLOR`, the asymmetric calico patch/ear
+# accent -- same underlying value, same single-sourcing discipline, just no
+# longer the whole body.
 ACCENT = QColor("#E8935F")
 ACCENT_HOVER = QColor("#DC7F45")  # a touch darker/more saturated, for :hover
 ACCENT_PRESSED = QColor("#C96B32")  # darker again, for :pressed
