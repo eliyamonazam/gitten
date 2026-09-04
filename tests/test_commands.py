@@ -1,6 +1,10 @@
+import ast
+from pathlib import Path
+
 from gitten.commands import (
     COMMANDS_HELP_TEXT,
     DASHBOARD_OPENED_REPLY,
+    PARTY_REPLY,
     SETTINGS_OPENED_REPLY,
     UNKNOWN_COMMAND_REPLY,
     format_battery_reply,
@@ -137,3 +141,38 @@ def test_settings_opened_reply_is_nonempty():
 
 def test_dashboard_opened_reply_is_nonempty():
     assert DASHBOARD_OPENED_REPLY
+
+
+# -- `party` easter egg (GITTEN_EASTER_EGG_SPEC.md) --------------------------
+#
+# Undocumented on purpose: it must stay out of the public help text/command
+# list while still actually being wired up in main.py's dispatch table.
+# Since that dispatch table lives in `GittenApp` (a real Qt object this
+# project's pure-logic tests never instantiate -- see DEVELOPMENT_NOTES.md's
+# established "off-screen QPixmap / live" verification pattern for anything
+# Qt-dependent), "dispatchable" is checked here the same pure way: parsing
+# main.py's source and confirming `_dispatch_command` actually has a branch
+# for it, without importing PySide6 or constructing any Qt object.
+
+
+def _dispatch_command_source() -> str:
+    main_path = Path(__file__).resolve().parent.parent / "src" / "gitten" / "main.py"
+    source = main_path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_dispatch_command":
+            return ast.get_source_segment(source, node)
+    raise AssertionError("_dispatch_command not found in gitten/main.py")
+
+
+def test_party_reply_is_nonempty():
+    assert PARTY_REPLY
+
+
+def test_party_is_undocumented():
+    assert "party" not in COMMANDS_HELP_TEXT
+
+
+def test_party_is_dispatchable():
+    dispatch_source = _dispatch_command_source()
+    assert '"party"' in dispatch_source

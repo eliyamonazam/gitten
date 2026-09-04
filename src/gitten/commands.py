@@ -19,6 +19,10 @@ COMMANDS_HELP_TEXT = (
 UNKNOWN_COMMAND_REPLY = "didn't understand that, try `help`"
 SETTINGS_OPENED_REPLY = "opening settings..."
 DASHBOARD_OPENED_REPLY = "opening dashboard..."
+# A small undocumented easter egg (see GITTEN_EASTER_EGG_SPEC.md):
+# deliberately *not* mentioned in COMMANDS_HELP_TEXT above, so `help` never
+# reveals it -- discoverable only by reading the source or guessing.
+PARTY_REPLY = "\U0001f389 you found it!"
 
 
 def parse_command(text: str) -> tuple[str, str]:

@@ -4955,3 +4955,104 @@ exact pre-v1.17 signatures.
 note, no value change), `pyproject.toml` (version bump to 0.17.0, one
 stale word fixed in the description), `assets/demo.png` (regenerated). No
 other file in `src/gitten/` changed.
+
+## 35. Easter egg: an undocumented `party` command bar command
+
+Input was `GITTEN_EASTER_EGG_SPEC.md` — a quick, self-contained round, not
+a new phase: add an undocumented command to the command bar's existing
+dispatch table (not listed in `help`, discoverable only by reading the
+source or guessing) that plays a short celebratory effect. The spec
+suggested `party` as the command word, left the exact word open, and was
+explicit that this should be "almost entirely recombining pieces that
+already exist" — no new rendering systems.
+
+### What was built
+
+`party` was added as a third, silent branch in `commands.py`/`main.py`'s
+existing structure, styled after `chase`/`streak`/etc. but deliberately
+excluded from `COMMANDS_HELP_TEXT`:
+
+- `commands.py` gained one new constant, `PARTY_REPLY = "🎉 you found
+  it!"` — *not* added to `COMMANDS_HELP_TEXT`, which is the one and only
+  thing that makes `party` "undocumented": the command bar itself has no
+  allow-list (`command_bar_window.py` forwards whatever raw text was
+  typed, unconditionally), so nothing needed to change there.
+- `window.py` gained one new method, `trigger_party_effect()`, placed
+  right after v1.7's `trigger_catch_effect()` and built the same way: the
+  exact same "spawn N particles radiating outward from the cat's center"
+  loop against the unmodified v1.5 `ParticleSystem`, just bigger and
+  longer-lived (32 particles / 1.0s / 130px-per-second, vs. the catch
+  effect's 10 / 0.5s / 90px-per-second) so it reads as a bigger
+  celebration than a quick catch-poof — then it also calls the existing
+  `_trigger_high_five()` (previously only reachable by actually
+  double-clicking the cat), so the burst plays alongside the same raised-
+  paw animation. Nothing in `particles.py` or `sprite.py` changed at all
+  — `draw_particles`/`ParticleSystem` are used exactly as they already
+  were, satisfying "no new rendering code" literally, not just in spirit.
+- `main.py`'s `_dispatch_command` gained one new `if command == "party":`
+  branch, calling `self.window.trigger_party_effect()` and returning
+  `PARTY_REPLY`, which `_on_command_submitted` then shows through the
+  same `window.show_nudge(reply)` call every other command's reply
+  already goes through — no new bubble/message code either.
+
+`GITTEN_EASTER_EGG_SPEC.md` mentioned varying the particle burst's colors
+("colorful particles... not just the usual sparkle tone") as a nice-to-
+have; that was deliberately left out, since `draw_particles`/`Particle`
+have no color field at all today (every particle is hardcoded to
+`sprite.py`'s single `_PARTICLE_COLOR`) — adding one would mean touching
+`particles.py`'s dataclass and `sprite.py`'s drawing function, which
+crosses from "recombine what exists" into "new rendering code," the one
+thing the handoff explicitly ruled out. "More particles, longer-lived,
+paired with the high-five" was judged to satisfy "bigger celebration"
+without that tradeoff.
+
+### Testing
+
+This project's tests never construct a real Qt object for anything
+`main.py`/`window.py`-shaped (no `test_main.py` has ever existed, and
+`window.py`'s effects have always been verified live/off-screen instead —
+see `_trigger_high_five`/`trigger_catch_effect`'s own sections above for
+precedent) — so the new pure test, added to `tests/test_commands.py`,
+stays consistent with that split rather than reaching for
+`QT_QPA_PLATFORM=offscreen` in a `pytest` file for the first time ever:
+
+- `test_party_reply_is_nonempty` / `test_party_is_undocumented` — plain
+  constant checks, same style as the rest of the file.
+- `test_party_is_dispatchable` — since "is it actually wired into
+  `_dispatch_command`" isn't expressible as a pure call into `commands.py`
+  alone (the dispatch table itself lives in `GittenApp`, a Qt object),
+  this reads `src/gitten/main.py`'s real source with `ast`, isolates the
+  `_dispatch_command` function's body, and asserts `"party"` appears in
+  it — a genuine, still-Qt-free check that the branch exists and wasn't
+  silently deleted or renamed, rather than only asserting the weaker
+  "the reply constant exists somewhere."
+
+`pytest -q` -> **237/237 passed** (234 previous, per v1.17's own count
+above, + 3 new).
+
+Live-verified the actual visual effect the way this project always
+verifies `window.py`-level effects: a headless `KittenWindow`
+(`QT_QPA_PLATFORM=offscreen`) had `trigger_party_effect()` called on it
+directly, then `.grab()`-screenshotted. `_particles.particles` held
+exactly 32 live particles immediately after triggering and `_high_fiving`
+was `True`; a screenshot taken ~180ms later (so the burst had drifted out
+from directly behind the cat's own body, which paints over the particles
+since `draw_particles` runs before `paint_kitten` in `paintEvent`) showed
+visible yellow dots radiating past both sides of the sprite once
+inspected at 4x/pixel level — small at this window's native 130x130 size,
+but genuinely present, not just present in internal state. Also called
+`window.show_nudge(PARTY_REPLY)` right after triggering the effect and
+grabbed another frame: the nudge bubble correctly grew to fit the new
+text and displayed it (rendered as tofu boxes in this headless/offscreen
+environment specifically — a known limitation of emoji glyph rendering
+under `QT_QPA_PLATFORM=offscreen`, not a bug in this change: `oneliners.py`
+and `main.py` already use emoji elsewhere in this codebase and would hit
+the exact same tofu-box rendering headless).
+
+### Files changed this round
+
+`src/gitten/commands.py` (`PARTY_REPLY` added), `src/gitten/window.py`
+(`trigger_party_effect()` + its constants added), `src/gitten/main.py`
+(one import, one dispatch branch), `tests/test_commands.py` (3 new
+tests), `pyproject.toml` (version bump to 0.17.1). No rendering code in
+`particles.py` or `sprite.py` touched.

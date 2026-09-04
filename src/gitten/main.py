@@ -27,6 +27,7 @@ from gitten.command_bar_window import COMMAND_BAR_HEIGHT, COMMAND_BAR_WIDTH, Com
 from gitten.commands import (
     COMMANDS_HELP_TEXT,
     DASHBOARD_OPENED_REPLY,
+    PARTY_REPLY,
     SETTINGS_OPENED_REPLY,
     UNKNOWN_COMMAND_REPLY,
     format_battery_reply,
@@ -801,6 +802,14 @@ class GittenApp:
         if command == "dashboard":
             self._open_dashboard()
             return DASHBOARD_OPENED_REPLY
+        if command == "party":
+            # Undocumented easter egg -- deliberately absent from
+            # COMMANDS_HELP_TEXT/`help`, see GITTEN_EASTER_EGG_SPEC.md.
+            # Reuses `trigger_party_effect`'s particle burst + high-five
+            # (both already-existing pieces) and this same reply mechanism
+            # every other command already uses -- no new plumbing.
+            self.window.trigger_party_effect()
+            return PARTY_REPLY
         if command == "help":
             return COMMANDS_HELP_TEXT
         if command == "quit":

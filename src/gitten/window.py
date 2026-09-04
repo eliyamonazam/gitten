@@ -87,6 +87,17 @@ _CATCH_EFFECT_PARTICLE_COUNT = 10
 _CATCH_EFFECT_LIFESPAN_SECONDS = 0.5
 _CATCH_EFFECT_SPEED_PIXELS_PER_SECOND = 90.0
 
+# Undocumented `party` command-bar easter egg (see
+# GITTEN_EASTER_EGG_SPEC.md): the exact same radiating-burst technique as
+# the catch effect just above, reused unchanged -- just more particles,
+# living a bit longer, so it reads as a bigger celebration rather than a
+# quick poof. No new rendering code; `trigger_party_effect` below also
+# reuses `_trigger_high_five` outright instead of inventing a second
+# "happy" pose.
+_PARTY_EFFECT_PARTICLE_COUNT = 32
+_PARTY_EFFECT_LIFESPAN_SECONDS = 1.0
+_PARTY_EFFECT_SPEED_PIXELS_PER_SECOND = 130.0
+
 # Shown in the inbox view for the two distinct "nothing to show" causes the
 # v1.2 spec calls out -- kept as plain strings (not exceptions) so
 # `set_inbox_items` can't be misused to smuggle a real error through.
@@ -415,6 +426,31 @@ class KittenWindow(QWidget):
                 dx=dx,
                 dy=dy,
             )
+
+    def trigger_party_effect(self) -> None:
+        """The undocumented `party` command-bar easter egg -- a bigger,
+        longer-lived version of `trigger_catch_effect`'s particle burst
+        above, plus the existing double-click high-five animation
+        (`_trigger_high_five`, otherwise only reachable by actually
+        double-clicking the cat). Both are pieces that already exist;
+        `main.py`'s command dispatch calls this once and shows the reply
+        text through the same nudge-bubble mechanism every other command
+        reply already uses."""
+        now = time.monotonic()
+        origin = self.mapToGlobal(QPoint(self.width() // 2, self.height() // 2))
+        for i in range(_PARTY_EFFECT_PARTICLE_COUNT):
+            angle = 2 * math.pi * i / _PARTY_EFFECT_PARTICLE_COUNT
+            dx = _PARTY_EFFECT_SPEED_PIXELS_PER_SECOND * math.cos(angle)
+            dy = _PARTY_EFFECT_SPEED_PIXELS_PER_SECOND * math.sin(angle)
+            self._particles.spawn_particle(
+                float(origin.x()),
+                float(origin.y()),
+                now,
+                lifespan=_PARTY_EFFECT_LIFESPAN_SECONDS,
+                dx=dx,
+                dy=dy,
+            )
+        self._trigger_high_five()
 
     def set_context_menu_callback(self, callback) -> None:
         self._context_menu_requested_callback = callback
